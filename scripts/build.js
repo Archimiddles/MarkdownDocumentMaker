@@ -28,6 +28,7 @@ const options = {
   loader: { '.woff2': 'file', '.woff': 'file', '.ttf': 'file' },
   assetNames: 'assets/[name]-[hash]',
   sourcemap: watch ? 'inline' : false,
+  minify: !watch,
   logLevel: 'info',
   plugins: [pageCssAsText],
 };

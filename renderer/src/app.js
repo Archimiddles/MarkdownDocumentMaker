@@ -199,8 +199,13 @@ mermaid.initialize({
   startOnLoad: false,
   securityLevel: 'strict',
   suppressErrorRendering: true,
-  theme: 'neutral',
+  theme: 'neutral', // Mermaid's own recommendation for black-and-white printing
   fontFamily: 'Inter, system-ui, sans-serif',
+  // Plain SVG text instead of HTML-in-foreignObject labels: prints as real
+  // vector text, cannot be clipped by a too-narrow label box, and is not
+  // affected by the page's own CSS.
+  htmlLabels: false,
+  flowchart: { htmlLabels: false },
   logLevel: 'fatal', // parse errors are shown on the page instead
 });
 
@@ -832,8 +837,14 @@ async function init() {
     zoomFrame = requestAnimationFrame(applyZoom);
   }).observe(els.scroll);
 
-  // Mermaid measures text while laying out, so the UI fonts must be in first.
-  try { await document.fonts.ready; } catch { /* ignore */ }
+  // Mermaid measures text while laying out and memoises the result for the
+  // lifetime of the page, so the diagram font must be loaded before the first
+  // render, not merely requested.
+  try {
+    await document.fonts.load('16px "Inter"');
+    await document.fonts.load('bold 16px "Inter"');
+    await document.fonts.ready;
+  } catch { /* ignore */ }
 
   // First render: a fresh install shows the sample so the app is not an empty box.
   if (!els.editor.value.trim()) {
