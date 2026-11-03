@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob:;">
+  <title>Plan Printer</title>
+  <link rel="stylesheet" href="dist/app.css" data-pagedjs-ignore>
+</head>
+<body>
+<div class="app" id="app">
+  <header class="toolbar">
+    <div class="tb-row">
+      <div class="brand">Plan Printer</div>
+      <div class="group">
+        <button id="btn-open" title="Open a Markdown file (Ctrl+O)">Open…</button>
+        <button id="btn-open-plans" title="Browse ~/.claude/plans" hidden>Claude plans…</button>
+        <button id="btn-paste" title="Replace the editor with the clipboard contents">Paste</button>
+        <button id="btn-sample" title="Load the bundled example plan">Sample</button>
+        <button id="btn-clear" title="Clear the editor">Clear</button>
+      </div>
+      <div class="group grow">
+        <label>Title <input id="title" type="text" placeholder="from first heading" autocomplete="off"></label>
+        <label>Date <input id="date" type="text" placeholder="today" autocomplete="off"></label>
+      </div>
+      <div class="group">
+        <button id="btn-pdf" class="primary" title="Export PDF (Ctrl+E)">Export PDF…</button>
+        <button id="btn-print" title="Print (Ctrl+P)">Print…</button>
+      </div>
+    </div>
+    <div class="tb-row">
+      <div class="group">
+        <label>Layout <select id="layout"></select></label>
+        <label>Paper <select id="paper"></select></label>
+        <label>Notes box <select id="notes"></select></label>
+        <label>Pattern <select id="pattern"></select></label>
+        <label class="check"><input id="breakH2" type="checkbox"> New page at each H2</label>
+      </div>
+      <div class="group right">
+        <label>Zoom <select id="zoom"></select></label>
+        <button id="btn-toggle-editor" title="Show or hide the editor (Ctrl+\)">Hide editor</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="editor-pane">
+      <textarea id="editor" spellcheck="false" placeholder="Paste a Claude Code plan (Markdown) here, or drop a .md file onto this box."></textarea>
+    </section>
+    <section class="preview-scroll" id="preview-scroll">
+      <div class="preview-inner" id="preview-inner">
+        <div id="pages"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="statusbar">
+    <span id="status">Ready</span>
+    <span id="status-right"></span>
+  </footer>
+</div>
+<script src="dist/app.js"></script>
+</body>
+</html>

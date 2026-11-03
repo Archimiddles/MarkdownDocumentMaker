@@ -1,0 +1,303 @@
+/*
+ * Printed-page styles. This file is handed to Paged.js as text (see
+ * scripts/build.js), which parses it with css-tree, so keep it to plain CSS:
+ * no nesting, no :has(), no @layer. The @page block and the --notes-height /
+ * --body-pt variables are generated in app.js and prepended to this file.
+ */
+
+/* ---- Document body ------------------------------------------------------- */
+
+.plan {
+  font-family: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+  font-size: var(--body-pt, 11pt);
+  line-height: 1.45;
+  color: #111;
+  hyphens: auto;
+  -webkit-hyphens: auto;
+}
+
+.plan > :first-child { margin-top: 0; }
+
+.plan .empty-hint {
+  color: #999;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 11pt;
+  text-align: center;
+  margin-top: 2in;
+}
+
+.plan h1, .plan h2, .plan h3, .plan h4, .plan h5, .plan h6 {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 700;
+  line-height: 1.22;
+  color: #000;
+  break-after: avoid;
+  page-break-after: avoid;
+}
+
+.plan h1 {
+  font-size: 1.85em;
+  letter-spacing: -0.012em;
+  margin: 0 0 0.55em;
+  padding-bottom: 0.22em;
+  border-bottom: 1.6pt solid #1a1a1a;
+}
+
+.plan h2 {
+  font-size: 1.32em;
+  margin: 1.35em 0 0.5em;
+  padding-bottom: 0.14em;
+  border-bottom: 0.6pt solid #9a9a9a;
+}
+
+.plan h3 { font-size: 1.1em; margin: 1.15em 0 0.4em; }
+
+.plan h4 {
+  font-size: 0.86em;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #333;
+  margin: 1em 0 0.3em;
+}
+
+.plan h5, .plan h6 { font-size: 0.95em; margin: 0.9em 0 0.3em; }
+
+.plan p { margin: 0 0 0.7em; orphans: 3; widows: 3; }
+
+.plan a { color: #111; text-decoration: underline; text-decoration-color: #999; text-underline-offset: 2pt; }
+
+.plan strong { font-weight: 700; }
+
+.plan img { max-width: 100%; height: auto; }
+
+.plan hr { border: 0; border-top: 0.6pt solid #aaa; margin: 1.2em 0; }
+
+/* ---- Lists --------------------------------------------------------------- */
+
+.plan ul, .plan ol { margin: 0 0 0.8em; padding-left: 1.5em; }
+.plan li { margin: 0.2em 0; }
+.plan li > p { margin-bottom: 0.3em; }
+.plan li > ul, .plan li > ol { margin-top: 0.15em; margin-bottom: 0.3em; }
+.plan ol ol { list-style: lower-alpha; }
+
+.plan ul.task-list { list-style: none; padding-left: 0.35em; }
+.plan li.task { position: relative; padding-left: 1.55em; }
+
+/* Checkboxes are drawn with CSS so they print identically everywhere. */
+.plan .cb {
+  position: absolute;
+  left: 0.1em;
+  top: 0.28em;
+  width: 0.82em;
+  height: 0.82em;
+  border: 0.9pt solid #333;
+  border-radius: 1.5pt;
+  background: #fff;
+}
+.plan .cb-checked::after {
+  content: "";
+  position: absolute;
+  left: 0.22em;
+  top: 0.02em;
+  width: 0.26em;
+  height: 0.5em;
+  border: solid #111;
+  border-width: 0 1.6pt 1.6pt 0;
+  transform: rotate(40deg);
+}
+
+/* ---- Code ---------------------------------------------------------------- */
+
+.plan code, .plan pre {
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.plan code { font-size: 0.86em; }
+
+.plan p code, .plan li code, .plan td code, .plan th code, .plan h1 code, .plan h2 code, .plan h3 code, .plan h4 code, .plan blockquote code {
+  background: #f0f0f1;
+  border: 0.5pt solid #dcdcdf;
+  border-radius: 2pt;
+  padding: 0 0.25em;
+  overflow-wrap: anywhere;
+}
+
+.plan h1 code, .plan h2 code, .plan h3 code { font-size: 0.85em; }
+
+.plan pre {
+  position: relative;
+  background: #f6f6f7;
+  border: 0.6pt solid #d3d3d6;
+  border-left: 2.2pt solid #8a8a90;
+  border-radius: 2pt;
+  padding: 0.6em 0.85em 0.6em 0.8em;
+  margin: 0.45em 0 0.95em;
+  font-size: 0.8em;
+  line-height: 1.42;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+/* Short code blocks stay on one page; long ones are allowed to split. */
+.plan pre.keep { break-inside: avoid; page-break-inside: avoid; }
+
+/* Each source line is its own block so page breaks fall between whole lines. */
+.plan pre .code-line { display: block; min-height: 1.42em; }
+
+.plan pre code, .plan pre code.hljs {
+  display: block;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  font-size: inherit;
+  white-space: inherit;
+  overflow: visible;
+}
+
+.plan pre[data-lang]::before {
+  content: attr(data-lang);
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 1.5pt 5pt;
+  background: #f6f6f7;
+  border-bottom-left-radius: 2pt;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 6.5pt;
+  letter-spacing: 0.06em;
+  color: #9a9a9e;
+}
+
+/* ---- Quotes and tables --------------------------------------------------- */
+
+.plan blockquote {
+  margin: 0.6em 0 0.95em;
+  padding: 0.2em 0 0.2em 0.9em;
+  border-left: 2pt solid #9a9a9a;
+  color: #333;
+}
+.plan blockquote > :last-child { margin-bottom: 0; }
+
+.plan table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.45em 0 1em;
+  font-size: 0.88em;
+  line-height: 1.35;
+}
+.plan th, .plan td {
+  border: 0.5pt solid #9d9d9d;
+  padding: 0.32em 0.5em;
+  vertical-align: top;
+  text-align: left;
+}
+.plan th {
+  background: #ececee;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 600;
+  font-size: 0.9em;
+}
+.plan thead { display: table-header-group; }
+.plan tr { break-inside: avoid; page-break-inside: avoid; }
+
+/* Consecutive headings (e.g. an H2 directly followed by an H3) are grouped so
+   Paged.js moves them together with the content that follows. */
+.plan .heading-group { break-inside: avoid; page-break-inside: avoid; break-after: avoid; page-break-after: avoid; }
+.plan .heading-group > :first-child { margin-top: 0; }
+
+/* ---- Optional page break before each H2 ---------------------------------- */
+
+.plan.page-break-h2 h2, .plan.page-break-h2 .heading-group.starts-h2 { break-before: page; page-break-before: always; }
+.plan.page-break-h2 .heading-group h2 { break-before: auto; page-break-before: auto; }
+.plan.page-break-h2 h2.first-block, .plan.page-break-h2 .heading-group.first-block { break-before: auto; page-break-before: auto; }
+
+/* ---- Page furniture (injected per page by app.js) ------------------------ */
+
+.page-header {
+  position: absolute;
+  left: var(--pagedjs-margin-left);
+  right: var(--pagedjs-margin-right);
+  top: calc(var(--pagedjs-margin-top) - 0.46in);
+  height: 0.28in;
+  box-sizing: border-box;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 1.5em;
+  padding-bottom: 3pt;
+  border-bottom: 0.5pt solid #b5b5b5;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 8pt;
+  line-height: 1.2;
+  color: #555;
+}
+.page-header .ph-title {
+  font-weight: 600;
+  color: #2a2a2a;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.page-header .ph-meta { white-space: nowrap; flex-shrink: 0; }
+
+.notes-box {
+  position: absolute;
+  left: var(--pagedjs-margin-left);
+  right: var(--pagedjs-margin-right);
+  bottom: 0.35in;
+  height: var(--notes-height, 2.25in);
+  box-sizing: border-box;
+  border: 0.6pt solid #b0b0b4;
+  border-radius: 3pt;
+  background-color: #fff;
+}
+
+.notes-label {
+  position: absolute;
+  top: -0.09in;
+  left: 0.14in;
+  padding: 0 0.07in;
+  background: #fff;
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 7.2pt;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: #7a7a80;
+}
+
+.notes-dots {
+  background-image: radial-gradient(circle, #a6a6ab 0.55pt, transparent 0.95pt);
+  background-size: 0.2in 0.2in;
+  background-position: 0.1in 0.1in;
+}
+
+.notes-lines {
+  background-image: linear-gradient(to bottom, #c6c6ca 0, #c6c6ca 0.55pt, transparent 0.55pt, transparent 100%);
+  background-size: 100% 0.3in;
+  background-position: 0 0.3in;
+  background-repeat: repeat-y;
+}
+
+.notes-blank { background-image: none; }
+
+/* Margin-notes layout: a dotted column down the wide right margin. */
+.margin-notes {
+  position: absolute;
+  top: var(--pagedjs-margin-top);
+  bottom: var(--pagedjs-margin-bottom);
+  right: 0.45in;
+  width: calc(var(--pagedjs-margin-right) - 0.8in);
+  box-sizing: border-box;
+  border-left: 0.5pt dashed #c3c3c7;
+  padding-left: 0.1in;
+}
+.margin-notes.notes-dots {
+  background-position: 0.2in 0.1in;
+  background-clip: content-box;
+}
+.margin-notes.notes-lines {
+  background-position: 0 0.3in;
+  background-clip: content-box;
+}

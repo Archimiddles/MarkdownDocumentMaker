@@ -1,0 +1,10 @@
+node_modules/
+renderer/dist/
+dist/
+out/
+.venv/
+.idea/
+*.log
+.DS_Store
+test/output/
+release/

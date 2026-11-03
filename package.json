@@ -1,0 +1,62 @@
+{
+  "name": "markdown-document-maker",
+  "productName": "Plan Printer",
+  "version": "0.1.0",
+  "description": "Paste a Claude Code plan (or any Markdown) and get a clean, paginated, print-ready document with wide margins and a notes box on every page.",
+  "main": "main.js",
+  "license": "MIT",
+  "author": {
+    "name": "Hector Killick",
+    "email": "Archimiddles@users.noreply.github.com",
+    "url": "https://github.com/Archimiddles"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Archimiddles/MarkdownDocumentMaker.git"
+  },
+  "scripts": {
+    "build": "node scripts/build.js",
+    "start": "npm run build && node scripts/start.js",
+    "dev": "node scripts/build.js --watch & node scripts/start.js",
+    "test": "npm run build && node test/run.js",
+    "dist": "npm run build && npx --yes electron-builder@26 --linux AppImage deb",
+    "postinstall": "node scripts/build.js"
+  },
+  "devDependencies": {
+    "@fontsource/inter": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@fontsource/source-serif-4": "^5.3.1",
+    "dompurify": "^3.4.17",
+    "electron": "^45.2.1",
+    "esbuild": "^0.28.2",
+    "highlight.js": "^11.12.0",
+    "marked": "^18.1.3",
+    "marked-highlight": "^2.2.4",
+    "pagedjs": "^0.4.3"
+  },
+  "build": {
+    "appId": "io.github.archimiddles.planprinter",
+    "productName": "Plan Printer",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/index.html",
+      "renderer/dist/**/*",
+      "samples/**/*"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Office",
+      "maintainer": "Hector Killick <Archimiddles@users.noreply.github.com>"
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

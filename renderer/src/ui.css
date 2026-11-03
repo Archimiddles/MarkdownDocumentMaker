@@ -1,0 +1,171 @@
+/* Application chrome. Everything about the printed page lives in page.css. */
+
+:root {
+  --bg: #e4e4e8;
+  --panel: #f7f7f8;
+  --border: #d2d2d7;
+  --text: #1b1b1f;
+  --muted: #65656d;
+  --accent: #2f5bd7;
+  --accent-hover: #2549b5;
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; margin: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.app {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  height: 100vh;
+}
+
+/* Toolbar ------------------------------------------------------------------ */
+
+.toolbar {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  padding: 7px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tb-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+
+.brand { font-weight: 700; letter-spacing: 0.01em; margin-right: 2px; }
+
+.group { display: flex; align-items: center; gap: 6px; }
+.group.grow { flex: 1 1 auto; }
+.group.right { margin-left: auto; }
+
+label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+label.check { color: var(--text); cursor: pointer; }
+
+input[type="text"], select {
+  font: inherit;
+  color: var(--text);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 7px;
+  height: 28px;
+}
+input#title { width: 280px; }
+input#date { width: 120px; }
+
+button {
+  font: inherit;
+  color: var(--text);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 10px;
+  height: 28px;
+  cursor: pointer;
+}
+button:hover { background: #eeeef2; }
+button:active { background: #e3e3e8; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { background: var(--accent-hover); }
+button[hidden] { display: none; }
+
+/* Main split --------------------------------------------------------------- */
+
+.main {
+  display: grid;
+  grid-template-columns: minmax(300px, 36%) minmax(0, 1fr);
+  min-height: 0;
+}
+.app.editor-hidden .main { grid-template-columns: minmax(0, 1fr); }
+.app.editor-hidden .editor-pane { display: none; }
+
+.editor-pane {
+  border-right: 1px solid var(--border);
+  min-height: 0;
+  display: flex;
+}
+.editor-pane.dragover { outline: 2px dashed var(--accent); outline-offset: -4px; }
+
+#editor {
+  flex: 1;
+  width: 100%;
+  border: 0;
+  outline: 0;
+  resize: none;
+  padding: 14px 16px;
+  font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  background: #fbfbfc;
+  color: #222;
+  tab-size: 2;
+}
+
+/* Preview ------------------------------------------------------------------ */
+
+.preview-scroll {
+  overflow: auto;
+  min-height: 0;
+  padding: 22px 18px;
+}
+
+.preview-inner { margin: 0 auto; position: relative; }
+
+#pages { transform-origin: top left; }
+
+#pages .pagedjs_pages {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  width: var(--pagedjs-width);
+}
+
+#pages .pagedjs_page {
+  flex: none;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22), 0 10px 28px rgba(0, 0, 0, 0.12);
+}
+
+/* Status bar --------------------------------------------------------------- */
+
+.statusbar {
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  padding: 4px 12px;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.statusbar .error { color: #b3261e; }
+
+/* Print: hide the chrome and let Paged.js pages flow one per sheet --------- */
+
+@media print {
+  html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
+  .app { display: block !important; height: auto !important; }
+  .toolbar, .statusbar, .editor-pane { display: none !important; }
+  .main { display: block !important; }
+  .preview-scroll { overflow: visible !important; padding: 0 !important; height: auto !important; }
+  .preview-inner { width: auto !important; height: auto !important; margin: 0 !important; }
+  #pages { transform: none !important; }
+  #pages .pagedjs_pages { display: block !important; gap: 0 !important; width: auto !important; }
+  #pages .pagedjs_page { box-shadow: none !important; }
+}
