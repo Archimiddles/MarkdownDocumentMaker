@@ -14,6 +14,7 @@
   color: #111;
   hyphens: auto;
   -webkit-hyphens: auto;
+  overflow-wrap: anywhere;
 }
 
 .plan > :first-child { margin-top: 0; }
@@ -80,8 +81,12 @@
 .plan li > ul, .plan li > ol { margin-top: 0.15em; margin-bottom: 0.3em; }
 .plan ol ol { list-style: lower-alpha; }
 
-.plan ul.task-list { list-style: none; padding-left: 0.35em; }
-.plan li.task { position: relative; padding-left: 1.55em; }
+.plan ul.task-list, .plan ol.task-list { list-style: none; padding-left: 0.35em; }
+.plan li.task { position: relative; padding-left: 1.55em; list-style: none; }
+/* In a mixed list the box takes the bullet's place instead of indenting the item. */
+.plan ul:not(.task-list) > li.task, .plan ol:not(.task-list) > li.task { padding-left: 0; }
+.plan ul:not(.task-list) > li.task > .cb, .plan ol:not(.task-list) > li.task > .cb { left: -1.3em; }
+.plan ul:not(.task-list) > li.task > p > .cb, .plan ol:not(.task-list) > li.task > p > .cb { left: -1.3em; }
 
 /* Checkboxes are drawn with CSS so they print identically everywhere. */
 .plan .cb {

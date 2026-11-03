@@ -15,7 +15,7 @@ printer or the PDF, page for page.
 | Review | Margin notes | Dense |
 | --- | --- | --- |
 | ![Review layout](docs/layout-review.png) | ![Margin notes layout](docs/layout-margin.png) | ![Dense layout](docs/layout-dense.png) |
-| Wide, symmetric 1.25 in side margins, 11 pt body. The default. | Narrow text column with a 2.9 in dotted column down the right for line-by-line comments. | 0.75 in margins and 9.5 pt body for long plans. |
+| Wide, symmetric 1.25 in side margins, 11 pt body. The default. | Narrow text column with a 2.9 in right margin holding a dotted column for line-by-line comments. | 0.75 in margins and 9.5 pt body for long plans. |
 
 Every layout also has:
 
@@ -25,8 +25,8 @@ Every layout also has:
 - **New page at each H2**: one section per sheet for plans you want to shuffle.
 
 Code blocks keep their syntax highlighting and split between whole lines when they cross
-a page; task-list items print as real tick boxes; tables keep their header row and never
-split a row; headings never end up alone at the bottom of a page.
+a page; task-list items print as real tick boxes; tables never split a row; headings never
+end up alone at the bottom of a page.
 
 ![A page with a code block and the notes box](docs/layout-review-code.png)
 
@@ -41,8 +41,10 @@ npm install
 npm start
 ```
 
-`npm install` downloads Electron (about 100 MB) and bundles the renderer; `npm start`
-opens the app with the sample plan loaded.
+`npm install` downloads Electron (about 100 MB) and bundles the renderer. On first run
+`npm start` opens the app with the sample plan loaded; after that it restores whatever you
+had last time. `npm run dev` does the same but rebuilds the renderer when you edit it
+(press `Ctrl+R` in the app to reload).
 
 <details>
 <summary>Ubuntu 24.04 and newer: "SUID sandbox helper binary was found, but is not configured correctly"</summary>
@@ -93,6 +95,13 @@ The last text and settings are remembered between launches.
 - `renderer/src/ui.css`: the application chrome, plus the print rules that hide it.
 - `scripts/build.js`: a small esbuild script that bundles the renderer and the
   self-hosted fonts (Inter, Source Serif 4, JetBrains Mono via Fontsource).
+- `scripts/start.js`: launches Electron and retries without the Chromium sandbox if
+  Ubuntu's AppArmor restriction blocks it.
+- `test/fixtures/edge-cases.md`: awkward Markdown (a code block longer than a page, a
+  wide table, nested task lists, inline HTML) used by the test suite.
+
+Remote images in a plan are fetched when online and printed as a broken-image glyph
+otherwise. Paged.js does not repeat a table's header row on continuation pages.
 
 ## Tests
 

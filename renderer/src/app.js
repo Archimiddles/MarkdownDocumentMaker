@@ -124,10 +124,25 @@ const state = {
   lastError: null,
 };
 
+function sanitizeSettings(raw) {
+  const s = { ...DEFAULTS };
+  if (!raw || typeof raw !== 'object') return s;
+  const pick = (key, table) => { if (typeof raw[key] === 'string' && table[raw[key]]) s[key] = raw[key]; };
+  pick('layout', LAYOUTS);
+  pick('paper', PAPERS);
+  pick('notes', NOTES);
+  pick('pattern', PATTERNS);
+  pick('zoom', ZOOMS);
+  if (typeof raw.breakH2 === 'boolean') s.breakH2 = raw.breakH2;
+  if (typeof raw.editorVisible === 'boolean') s.editorVisible = raw.editorVisible;
+  if (typeof raw.title === 'string') s.title = raw.title.slice(0, 200);
+  if (typeof raw.date === 'string') s.date = raw.date.slice(0, 60);
+  return s;
+}
+
 function loadState() {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_SETTINGS) || '{}');
-    state.settings = { ...DEFAULTS, ...saved };
+    state.settings = sanitizeSettings(JSON.parse(localStorage.getItem(STORAGE_SETTINGS) || '{}'));
   } catch {
     state.settings = { ...DEFAULTS };
   }
@@ -213,7 +228,7 @@ function wrapCodeLines(codeEl) {
   codeEl.innerHTML = out;
 }
 
-function markdownToDom(markdown) {
+function markdownToDom(markdown, codeCharsPerLine = 80) {
   const root = document.createElement('div');
   root.className = 'plan';
 
@@ -226,7 +241,11 @@ function markdownToDom(markdown) {
   }
 
   const raw = marked.parse(markdown);
-  root.innerHTML = DOMPurify.sanitize(raw, { USE_PROFILES: { html: true } });
+  // <style> would restyle the whole app; forms have no place in a printout.
+  root.innerHTML = DOMPurify.sanitize(raw, {
+    USE_PROFILES: { html: true },
+    FORBID_TAGS: ['style', 'form', 'button', 'select', 'textarea'],
+  });
 
   // Task-list checkboxes -> CSS-drawn boxes that print consistently.
   root.querySelectorAll('input[type="checkbox"]').forEach((input) => {
@@ -235,10 +254,13 @@ function markdownToDom(markdown) {
     box.setAttribute('aria-hidden', 'true');
     input.replaceWith(box);
     const li = box.closest('li');
-    if (li) {
-      li.classList.add('task');
-      if (li.parentElement) li.parentElement.classList.add('task-list');
-    }
+    if (li) li.classList.add('task');
+  });
+  // Only a list made entirely of tasks drops its bullets and indentation;
+  // in a mixed list the box simply takes the bullet's place.
+  root.querySelectorAll('ul, ol').forEach((list) => {
+    const items = Array.from(list.children).filter((c) => c.tagName === 'LI');
+    if (items.length && items.every((li) => li.classList.contains('task'))) list.classList.add('task-list');
   });
 
   // Code blocks: language label, per-line wrapping, keep short blocks together.
@@ -246,8 +268,11 @@ function markdownToDom(markdown) {
     const pre = code.parentElement;
     const match = /language-([\w+#-]+)/.exec(code.className || '');
     if (match && match[1] !== 'plaintext') pre.dataset.lang = match[1];
-    const lineCount = code.textContent.replace(/\n$/, '').split('\n').length;
-    if (lineCount <= 18) pre.classList.add('keep');
+    // Keep a block on one page only if it will stay short after wrapping;
+    // Paged.js emits a blank page for an unsplittable block taller than a page.
+    const lines = code.textContent.replace(/\n$/, '').split('\n');
+    const wrapped = lines.reduce((n, l) => n + Math.max(1, Math.ceil(l.length / codeCharsPerLine)), 0);
+    if (wrapped <= 20) pre.classList.add('keep');
     wrapCodeLines(code);
   });
 
@@ -274,11 +299,11 @@ function markdownToDom(markdown) {
   return root;
 }
 
-function detectTitle(root, markdown) {
+function detectTitle(root) {
   const h = root.querySelector('h1') || root.querySelector('h2') || root.querySelector('h3');
   if (h && h.textContent.trim()) return h.textContent.trim();
-  const firstLine = markdown.split('\n').map((l) => l.trim()).find((l) => l);
-  return firstLine ? firstLine.replace(/^#+\s*/, '').slice(0, 80) : 'Untitled plan';
+  const text = (root.textContent || '').replace(/\s+/g, ' ').trim();
+  return text ? text.slice(0, 80) : 'Untitled plan';
 }
 
 function todayString() {
@@ -375,10 +400,11 @@ let previewer = null;
 let rendering = false;
 let pending = false;
 let renderTimer = null;
+let renderScheduled = false;
 
-function currentFurniture(root, markdown) {
+function currentFurniture(root) {
   const s = state.settings;
-  state.autoTitle = detectTitle(root, markdown);
+  state.autoTitle = detectTitle(root);
   const g = geometry(s);
   return {
     title: s.title.trim() || state.autoTitle,
@@ -395,14 +421,19 @@ async function render() {
     return;
   }
   rendering = true;
+  renderScheduled = false;
   state.lastError = null;
   setStatus('Rendering…');
   const t0 = performance.now();
   try {
     const markdown = els.editor.value;
-    const root = markdownToDom(markdown);
+    const g = geometry(state.settings);
+    // Approximate monospace characters per line: code is 0.8em of the body size
+    // and JetBrains Mono advances about 0.6em per character.
+    const codeCharsPerLine = Math.max(30, Math.floor((g.contentW * 72) / (0.8 * g.layout.bodyPt * 0.6)));
+    const root = markdownToDom(markdown, codeCharsPerLine);
     root.classList.toggle('page-break-h2', Boolean(state.settings.breakH2));
-    state.furniture = currentFurniture(root, markdown);
+    state.furniture = currentFurniture(root);
     els.title.placeholder = state.autoTitle || 'from first heading';
 
     // A fresh Previewer per render: reusing one re-registers every handler hook
@@ -440,7 +471,12 @@ async function render() {
 
 function scheduleRender(delay = 350) {
   clearTimeout(renderTimer);
+  renderScheduled = true;
   renderTimer = setTimeout(render, delay);
+}
+
+function renderOutstanding() {
+  return renderScheduled || rendering || pending;
 }
 
 async function renderNow() {
@@ -473,6 +509,7 @@ function applyZoom() {
   const pagesEl = els.pages.querySelector('.pagedjs_pages');
   if (!pagesEl) return;
   els.pages.style.transform = '';
+  els.pages.style.width = '';
   els.inner.style.width = '';
   els.inner.style.height = '';
   const naturalW = pagesEl.offsetWidth;
@@ -486,6 +523,9 @@ function applyZoom() {
   } else {
     scale = Number(zoom) || 1;
   }
+  // #pages must be exactly the pages' natural width before it is scaled,
+  // otherwise its scroll box ends up naturalW * scale^2 wide.
+  els.pages.style.width = `${naturalW}px`;
   els.pages.style.transform = `scale(${scale})`;
   els.inner.style.width = `${naturalW * scale}px`;
   els.inner.style.height = `${naturalH * scale}px`;
@@ -546,20 +586,23 @@ function setMarkdown(text) {
 
 async function doOpen(claudePlans = false) {
   const file = await api.openMarkdown({ claudePlans });
-  if (file) {
-    setMarkdown(file.text);
-    if (!state.settings.title) els.title.placeholder = file.name.replace(/\.(md|markdown|txt)$/i, '');
-    setStatus(`Opened ${file.name}`);
+  if (!file) return;
+  if (file.error) {
+    setStatus(`Could not open file: ${file.error}`, true);
+    return;
   }
+  setMarkdown(file.text);
+  setStatus(`Opened ${file.name}`);
 }
 
 async function doSave() {
   const r = await api.saveMarkdown(els.editor.value, state.furniture ? state.furniture.title : 'plan');
   if (r && r.ok) setStatus(`Saved ${r.path}`);
+  else if (r && r.error) setStatus(`Could not save: ${r.error}`, true);
 }
 
 async function doExportPdf() {
-  if (rendering || pending) await renderNow();
+  if (renderOutstanding()) await renderNow();
   setStatus('Exporting PDF…');
   const r = await api.exportPdf({ paper: state.settings.paper, title: state.furniture ? state.furniture.title : 'plan' });
   if (r && r.ok) setStatus(`PDF saved: ${r.path}`);
@@ -568,7 +611,7 @@ async function doExportPdf() {
 }
 
 async function doPrint() {
-  if (rendering || pending) await renderNow();
+  if (renderOutstanding()) await renderNow();
   setStatus('Opening print dialog…');
   const r = await api.print();
   if (r && r.ok) setStatus('Sent to printer');
@@ -597,7 +640,7 @@ function toggleEditor() {
   applyZoom();
 }
 
-function init() {
+async function init() {
   fillSelect(els.layout, LAYOUTS);
   fillSelect(els.paper, PAPERS);
   fillSelect(els.notes, NOTES);
@@ -628,19 +671,32 @@ function init() {
     scheduleRender();
   });
 
+  // A file dropped anywhere must never navigate the window away from the app.
+  document.addEventListener('dragover', (e) => e.preventDefault());
+  document.addEventListener('drop', (e) => e.preventDefault());
+
   // Drop a .md file onto the editor.
-  els.editorPane.addEventListener('dragover', (e) => {
-    e.preventDefault();
+  let dragDepth = 0;
+  els.editorPane.addEventListener('dragenter', () => {
+    dragDepth++;
     els.editorPane.classList.add('dragover');
   });
-  els.editorPane.addEventListener('dragleave', () => els.editorPane.classList.remove('dragover'));
+  els.editorPane.addEventListener('dragleave', () => {
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) els.editorPane.classList.remove('dragover');
+  });
   els.editorPane.addEventListener('drop', async (e) => {
     e.preventDefault();
+    dragDepth = 0;
     els.editorPane.classList.remove('dragover');
     const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
     if (!file) return;
-    setMarkdown(await file.text());
-    setStatus(`Loaded ${file.name}`);
+    try {
+      setMarkdown(await file.text());
+      setStatus(`Loaded ${file.name}`);
+    } catch (err) {
+      setStatus(`Could not read ${file.name}: ${err.message || err}`, true);
+    }
   });
 
   els.btnOpen.addEventListener('click', () => doOpen(false));
@@ -681,7 +737,15 @@ function init() {
     zoomFrame = requestAnimationFrame(applyZoom);
   }).observe(els.scroll);
 
-  // Automated test hook used by main.js in PLAN_PRINTER_TEST_OUT mode.
+  // First render: a fresh install shows the sample so the app is not an empty box.
+  if (!els.editor.value.trim()) {
+    await doSample();
+  } else {
+    scheduleRender(0);
+  }
+
+  // Automated test hook used by main.js in PLAN_PRINTER_TEST_OUT mode. Exposed
+  // only after the initial load so a late sample load cannot clobber a scenario.
   window.__planPrinterTest = {
     async apply(settings, markdown) {
       Object.assign(state.settings, settings || {});
@@ -697,13 +761,9 @@ function init() {
     },
     geometry: () => geometry(state.settings),
   };
-
-  // First render: a fresh install shows the sample so the app is not an empty box.
-  if (!els.editor.value.trim()) {
-    doSample();
-  } else {
-    scheduleRender(0);
-  }
 }
 
-init();
+init().catch((err) => {
+  console.error(err);
+  setStatus(`Startup error: ${err && err.message ? err.message : err}`, true);
+});

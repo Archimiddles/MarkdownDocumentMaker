@@ -46,11 +46,11 @@ function createWindow() {
     openExternal(url);
     return { action: 'deny' };
   });
+  // Any navigation after the initial load (including a file dropped outside
+  // the editor) is refused; web links go to the system browser instead.
   win.webContents.on('will-navigate', (event, url) => {
-    if (!url.startsWith('file://')) {
-      event.preventDefault();
-      openExternal(url);
-    }
+    event.preventDefault();
+    openExternal(url);
   });
   return win;
 }
@@ -148,7 +148,11 @@ ipcMain.handle('open-markdown', async (event, opts = {}) => {
   });
   if (result.canceled || result.filePaths.length === 0) return null;
   const file = result.filePaths[0];
-  return { name: path.basename(file), path: file, text: fs.readFileSync(file, 'utf8') };
+  try {
+    return { name: path.basename(file), path: file, text: fs.readFileSync(file, 'utf8') };
+  } catch (err) {
+    return { name: path.basename(file), path: file, error: String(err && err.message ? err.message : err) };
+  }
 });
 
 ipcMain.handle('save-markdown', async (event, text, suggestedName) => {
@@ -159,8 +163,12 @@ ipcMain.handle('save-markdown', async (event, text, suggestedName) => {
     filters: [{ name: 'Markdown', extensions: ['md'] }],
   });
   if (result.canceled || !result.filePath) return { ok: false, canceled: true };
-  fs.writeFileSync(result.filePath, String(text ?? ''), 'utf8');
-  return { ok: true, path: result.filePath };
+  try {
+    fs.writeFileSync(result.filePath, String(text ?? ''), 'utf8');
+    return { ok: true, path: result.filePath };
+  } catch (err) {
+    return { ok: false, error: String(err && err.message ? err.message : err) };
+  }
 });
 
 ipcMain.handle('export-pdf', async (event, opts = {}) => {
@@ -271,6 +279,10 @@ async function runTestMode(win) {
 }
 
 // ---- Lifecycle --------------------------------------------------------------
+
+// Test mode gets a throwaway profile so a user's saved text and settings never
+// leak into the test output.
+if (TEST_OUT) app.setPath('userData', path.join(TEST_OUT, 'user-data'));
 
 app.whenReady().then(() => {
   Menu.setApplicationMenu(buildMenu());

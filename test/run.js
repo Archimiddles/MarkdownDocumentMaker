@@ -5,7 +5,7 @@
 //   - the PDF page count equals the page count Paged.js showed in the preview
 //   - the PDF page size matches the selected paper
 //   - scenario-specific expectations (minimum pages, H2 breaks add pages, ...)
-// Usage: node test/run.js [--no-sandbox] [--keep]
+// Usage: node test/run.js [--no-sandbox]
 const { spawnSync, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -13,8 +13,7 @@ const path = require('node:path');
 const root = path.join(__dirname, '..');
 const out = path.join(__dirname, 'output');
 const electron = require('electron');
-const args = process.argv.slice(2);
-const extraArgs = args.filter((a) => a !== '--keep');
+const extraArgs = process.argv.slice(2);
 
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });

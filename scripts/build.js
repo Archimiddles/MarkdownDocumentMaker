@@ -27,7 +27,7 @@ const options = {
   outdir: path.join(__dirname, '..', 'renderer', 'dist'),
   loader: { '.woff2': 'file', '.woff': 'file', '.ttf': 'file' },
   assetNames: 'assets/[name]-[hash]',
-  sourcemap: 'inline',
+  sourcemap: watch ? 'inline' : false,
   logLevel: 'info',
   plugins: [pageCssAsText],
 };

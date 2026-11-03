@@ -8,7 +8,16 @@ const path = require('node:path');
 
 const electron = require('electron'); // resolves to the binary path
 const root = path.join(__dirname, '..');
-const userArgs = process.argv.slice(2);
+const argv = process.argv.slice(2);
+const watch = argv.includes('--watch');
+const userArgs = argv.filter((a) => a !== '--watch');
+
+// `npm run dev`: rebuild the renderer on change (reload the window with Ctrl+R).
+let watcher = null;
+if (watch) {
+  watcher = spawn(process.execPath, [path.join(__dirname, 'build.js'), '--watch'], { stdio: 'inherit' });
+  process.on('exit', () => { if (watcher && !watcher.killed) watcher.kill(); });
+}
 const SANDBOX_ERROR = /SUID sandbox helper binary was found|chrome-sandbox is owned by root|No usable sandbox/i;
 
 function launch(extraArgs, env) {
