@@ -36,6 +36,7 @@ const LAYOUTS = {
     top: 0.95, left: 1.25, right: 1.25, bodyPt: 11, marginColumn: false,
   },
   margin: {
+    // The dotted right-hand column replaces the bottom notes box in this layout.
     label: 'Margin notes — wide right column',
     top: 0.95, left: 0.8, right: 2.9, bodyPt: 10.5, marginColumn: true,
   },
@@ -315,7 +316,7 @@ function todayString() {
 function geometry(settings) {
   const paper = PAPERS[settings.paper] || PAPERS.letter;
   const layout = LAYOUTS[settings.layout] || LAYOUTS.review;
-  const notesH = (NOTES[settings.notes] || NOTES.medium).h;
+  const notesH = layout.marginColumn ? 0 : (NOTES[settings.notes] || NOTES.medium).h;
   // Notes box sits 0.35in above the sheet edge, with 0.3in between it and the text.
   const bottom = notesH > 0 ? Number((notesH + 0.35 + 0.3).toFixed(3)) : 0.8;
   return {
@@ -551,6 +552,9 @@ function syncControls() {
   els.pattern.value = PATTERNS[s.pattern] ? s.pattern : DEFAULTS.pattern;
   els.zoom.value = ZOOMS[s.zoom] ? s.zoom : DEFAULTS.zoom;
   els.breakH2.checked = Boolean(s.breakH2);
+  const usesMarginColumn = Boolean((LAYOUTS[s.layout] || LAYOUTS.review).marginColumn);
+  els.notes.disabled = usesMarginColumn;
+  els.notes.title = usesMarginColumn ? 'The Margin notes layout uses the right-hand column instead of a bottom box.' : '';
   els.title.value = s.title || '';
   els.date.value = s.date || '';
   els.app.classList.toggle('editor-hidden', !s.editorVisible);
@@ -564,7 +568,9 @@ function setStatus(text, isError = false) {
 
 function updateStatusRight() {
   const g = geometry(state.settings);
-  const notes = g.notesH > 0 ? `${g.notesH} in notes box` : 'no notes box';
+  const notes = g.layout.marginColumn
+    ? `${(g.layout.right - 0.8).toFixed(1)} in margin column`
+    : (g.notesH > 0 ? `${g.notesH} in notes box` : 'no notes box');
   els.statusRight.textContent =
     `${g.layout.label.split(' — ')[0]} · ${g.paper.label} · text area ${g.contentW} × ${g.contentH} in · ${notes}`;
 }
@@ -573,6 +579,7 @@ function bindSetting(el, key, { rerender = true, prop = 'value' } = {}) {
   el.addEventListener('change', () => {
     state.settings[key] = el[prop];
     saveSettings();
+    syncControls();
     if (rerender) scheduleRender(0);
     else applyZoom();
   });

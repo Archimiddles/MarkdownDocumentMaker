@@ -15,13 +15,13 @@ printer or the PDF, page for page.
 | Review | Margin notes | Dense |
 | --- | --- | --- |
 | ![Review layout](docs/layout-review.png) | ![Margin notes layout](docs/layout-margin.png) | ![Dense layout](docs/layout-dense.png) |
-| Wide, symmetric 1.25 in side margins, 11 pt body. The default. | Narrow text column with a 2.9 in right margin holding a dotted column for line-by-line comments. | 0.75 in margins and 9.5 pt body for long plans. |
+| Wide, symmetric 1.25 in side margins, 11 pt body. The default. | Narrow text column with a 2.9 in right margin holding a full-height dotted column for line-by-line comments. No bottom notes box. | 0.75 in margins and 9.5 pt body for long plans. |
 
 Every layout also has:
 
 - **Paper**: US Letter (default) or A4.
-- **Notes box**: small (1.5 in), medium (2.25 in), large (3 in) or none.
-- **Pattern**: dot grid, ruled lines or blank, for the notes box and the margin column.
+- **Notes box** (Review and Dense): small (1.5 in), medium (2.25 in), large (3 in) or none.
+- **Pattern**: dot grid, ruled lines or blank, for the notes box or the margin column.
 - **New page at each H2**: one section per sheet for plans you want to shuffle.
 
 Code blocks keep their syntax highlighting and split between whole lines when they cross

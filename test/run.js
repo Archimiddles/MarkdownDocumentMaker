@@ -24,7 +24,7 @@ const sampleText = fs.readFileSync(sample, 'utf8');
 
 const scenarios = [
   { name: 'review-letter-medium-dots', settings: { layout: 'review', paper: 'letter', notes: 'medium', pattern: 'dots', breakH2: false }, minPages: 2 },
-  { name: 'margin-letter-small-dots', settings: { layout: 'margin', paper: 'letter', notes: 'small', pattern: 'dots', breakH2: false }, minPages: 2 },
+  { name: 'margin-letter-dots', settings: { layout: 'margin', paper: 'letter', notes: 'medium', pattern: 'dots', breakH2: false }, minPages: 2 },
   { name: 'dense-letter-small-lines', settings: { layout: 'dense', paper: 'letter', notes: 'small', pattern: 'lines', breakH2: false }, minPages: 1 },
   { name: 'review-a4-large-lines', settings: { layout: 'review', paper: 'a4', notes: 'large', pattern: 'lines', breakH2: false }, minPages: 2 },
   { name: 'review-letter-nonotes-blank', settings: { layout: 'review', paper: 'letter', notes: 'none', pattern: 'blank', breakH2: false }, minPages: 1 },
