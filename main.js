@@ -4,7 +4,7 @@
 // The renderer runs sandboxed with context isolation; everything it needs is
 // exposed through preload.js and the ipcMain handlers below.
 
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell, clipboard } = require('electron');
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell, clipboard, session } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -224,8 +224,17 @@ async function runTestMode(win) {
     chrome: process.versions.chrome,
     startedAt: new Date().toISOString(),
     scenarios: [],
+    // Every request that is not for a local file. The app is meant to work
+    // fully offline (no hosted services, no API keys), so this should stay empty.
+    externalRequests: [],
     error: null,
   };
+  session.defaultSession.webRequest.onBeforeRequest((details, callback) => {
+    if (!/^(file|devtools|chrome|chrome-extension|blob|data):/i.test(details.url)) {
+      report.externalRequests.push({ url: details.url, resourceType: details.resourceType });
+    }
+    callback({});
+  });
   try {
     const defaultMd = process.env.PLAN_PRINTER_TEST_MD
       ? fs.readFileSync(process.env.PLAN_PRINTER_TEST_MD, 'utf8')
@@ -264,6 +273,7 @@ async function runTestMode(win) {
         previewPages: r && r.pages,
         title: r && r.title,
         renderMs: r && r.renderMs,
+        diagrams: r && r.diagrams,
         totalMs: Date.now() - t0,
         error: (r && r.error) || null,
         pdf: pdfName,

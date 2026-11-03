@@ -26,7 +26,14 @@ Every layout also has:
 
 Code blocks keep their syntax highlighting and split between whole lines when they cross
 a page; task-list items print as real tick boxes; tables never split a row; headings never
-end up alone at the bottom of a page.
+end up alone at the bottom of a page. A ```` ```mermaid ```` fence renders as a vector
+diagram (flowcharts, sequence, state, class, Gantt and the rest of
+[Mermaid](https://mermaid.js.org/)), scaled down only when it is wider or taller than the
+text column; a diagram with a syntax error prints its source with the parser's message
+above it. Diagrams are drawn by the bundled Mermaid library inside the app: nothing is
+sent to any service, and the test suite fails if the app makes a single network request.
+
+![A sequence diagram rendered on a page](docs/layout-diagram.png)
 
 ![A page with a code block and the notes box](docs/layout-review-code.png)
 
@@ -86,8 +93,8 @@ The last text and settings are remembered between launches.
   The renderer is sandboxed with context isolation; `preload.js` exposes a handful of
   IPC calls and nothing else.
 - `renderer/src/app.js`: Markdown → HTML with [marked](https://marked.js.org/) and
-  [highlight.js](https://highlightjs.org/), sanitised with DOMPurify, then paginated by
-  Paged.js. The header strip, notes box and margin column are injected into each page
+  [highlight.js](https://highlightjs.org/), sanitised with DOMPurify, Mermaid fences
+  rendered to inline SVG, then paginated by Paged.js. The header strip, notes box and margin column are injected into each page
   *after* layout, so they never push content around.
 - `renderer/src/page.css`: everything about the printed page. Handed to Paged.js as text
   because it has to parse the `@page` rules itself. The `@page` size and margins are
@@ -109,9 +116,9 @@ otherwise. Paged.js does not repeat a table's header row on continuation pages.
 npm test
 ```
 
-Launches the real app in a headless test mode, renders nine layout/paper/content
-combinations (including a code block longer than a page, a wide table, nested task lists
-and an empty document), exports each through `printToPDF`, and checks with `pdfinfo`
+Launches the real app in a headless test mode, renders eleven layout/paper/content
+combinations (including a code block longer than a page, a wide table, nested task lists,
+six Mermaid diagrams of which one is deliberately broken, and an empty document), exports each through `printToPDF`, and checks with `pdfinfo`
 that every PDF has the paper size you asked for and exactly as many pages as the preview
 showed. Screenshots and first-page renders land in `test/output/` for eyeballing.
 Needs `poppler-utils` (`pdfinfo`, `pdftoppm`) on the PATH.

@@ -20,6 +20,7 @@ fs.mkdirSync(out, { recursive: true });
 
 const sample = path.join(root, 'samples', 'sample-plan.md');
 const edge = path.join(__dirname, 'fixtures', 'edge-cases.md');
+const mermaidDoc = path.join(__dirname, 'fixtures', 'mermaid.md');
 const sampleText = fs.readFileSync(sample, 'utf8');
 
 const scenarios = [
@@ -32,6 +33,8 @@ const scenarios = [
   { name: 'edge-cases-review-letter', settings: { layout: 'review', paper: 'letter', notes: 'medium', pattern: 'dots', breakH2: false }, mdFile: edge, minPages: 2 },
   { name: 'long-dense-letter', settings: { layout: 'dense', paper: 'letter', notes: 'small', pattern: 'dots', breakH2: false }, md: Array(4).fill(sampleText).join('\n\n---\n\n'), minPages: 6, maxMs: 30000 },
   { name: 'empty-review-letter', settings: { layout: 'review', paper: 'letter', notes: 'medium', pattern: 'dots', breakH2: false }, md: '', minPages: 1, maxPages: 1 },
+  { name: 'mermaid-review-letter', settings: { layout: 'review', paper: 'letter', notes: 'medium', pattern: 'dots', breakH2: false }, mdFile: mermaidDoc, minPages: 2, expectDiagrams: { rendered: 5, failed: 1 } },
+  { name: 'mermaid-margin-letter', settings: { layout: 'margin', paper: 'letter', notes: 'none', pattern: 'dots', breakH2: false }, mdFile: mermaidDoc, minPages: 2, expectDiagrams: { rendered: 5, failed: 1 } },
 ];
 
 const env = {
@@ -60,6 +63,13 @@ const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
 if (report.error) {
   console.error('Test mode reported an error:\n' + report.error);
   process.exit(2);
+}
+// The app must never talk to the network: no hosted renderers, no API keys.
+const external = report.externalRequests || [];
+if (external.length) {
+  console.log(`FAIL network: ${external.length} external request(s) were made:\n  - ` + external.map((r) => `${r.resourceType} ${r.url}`).join('\n  - '));
+} else {
+  console.log('ok   network: no external requests were made by any scenario');
 }
 
 function SANDBOX_HINT(s) { return /SUID sandbox helper|chrome-sandbox/.test(s || ''); }
@@ -98,11 +108,17 @@ for (const scenario of scenarios) {
       if (other && !(info.pages > other.pdfPages)) problems.push(`expected more pages than ${scenario.morePagesThan} (${other.pdfPages})`);
     }
     if (r.pdfBytes < 10000) problems.push(`PDF suspiciously small (${r.pdfBytes} bytes)`);
+    if (scenario.expectDiagrams) {
+      const d = r.diagrams || {};
+      if (d.rendered !== scenario.expectDiagrams.rendered || d.failed !== scenario.expectDiagrams.failed) {
+        problems.push(`diagrams rendered/failed = ${d.rendered}/${d.failed}, expected ${scenario.expectDiagrams.rendered}/${scenario.expectDiagrams.failed}`);
+      }
+    }
     // First PDF page as PNG for visual review.
     try {
       execFileSync('pdftoppm', ['-png', '-r', '60', '-f', '1', '-l', '1', pdfPath, path.join(out, `${scenario.name}-pdf-p1`)]);
     } catch (e) { problems.push(`pdftoppm failed: ${e.message}`); }
-    rows.push({ scenario: scenario.name, pages: info.pages, preview: r.previewPages, ms: r.renderMs, size: `${info.width}x${info.height}`, ok: problems.length === 0 });
+    rows.push({ scenario: scenario.name, pages: info.pages, preview: r.previewPages, ms: r.renderMs, diagrams: r.diagrams ? `${r.diagrams.rendered}/${r.diagrams.failed}` : '', size: `${info.width}x${info.height}`, ok: problems.length === 0 });
   }
   if (problems.length) {
     failures++;
@@ -116,6 +132,7 @@ console.log('');
 console.table(rows);
 console.log(`Electron ${report.electron} · Chromium ${report.chrome}`);
 console.log(`Artifacts in ${out}`);
+if (external.length) failures++;
 if (failures) {
   console.log(`${failures} scenario(s) failed`);
   process.exit(1);

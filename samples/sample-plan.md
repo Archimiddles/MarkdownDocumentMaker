@@ -19,6 +19,16 @@ Use a token-bucket limiter keyed on API key, stored in Redis, evaluated in middl
 
 > **Decision:** fail open rather than fail closed. A limiter outage should not become an API outage. We log loudly and page on sustained `fail_open` events instead.
 
+```mermaid
+flowchart LR
+    A[Request] --> B{Exempt key?}
+    B -- yes --> H[Handler]
+    B -- no --> C[Token bucket<br/>in Redis]
+    C -- tokens left --> H
+    C -- empty --> D[429 + Retry-After]
+    C -. Redis down .-> E[Fail open,<br/>count metric] --> H
+```
+
 ## Files to touch (in order)
 
 1. `app/middleware/rate_limit.py` — new module with `TokenBucket` and `RateLimitMiddleware`.

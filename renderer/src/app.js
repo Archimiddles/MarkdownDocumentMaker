@@ -7,6 +7,7 @@ import { Marked } from 'marked';
 import { markedHighlight } from 'marked-highlight';
 import hljs from 'highlight.js/lib/common';
 import DOMPurify from 'dompurify';
+import mermaid from 'mermaid';
 import { Previewer, Handler, registerHandlers } from 'pagedjs';
 
 import pageCss from './page.css'; // bundled as a string, see scripts/build.js
@@ -123,6 +124,7 @@ const state = {
   pageCount: 0,
   lastRenderMs: 0,
   lastError: null,
+  diagramStats: { rendered: 0, failed: 0 },
 };
 
 function sanitizeSettings(raw) {
@@ -191,6 +193,83 @@ function escapeHtml(s) {
     .replace(/"/g, '&quot;');
 }
 
+// ---- Mermaid diagrams ---------------------------------------------------------
+
+mermaid.initialize({
+  startOnLoad: false,
+  securityLevel: 'strict',
+  suppressErrorRendering: true,
+  theme: 'neutral',
+  fontFamily: 'Inter, system-ui, sans-serif',
+  logLevel: 'fatal', // parse errors are shown on the page instead
+});
+
+// Rendering is the slow part, so diagrams are cached by their source text.
+const mermaidCache = new Map();
+const MERMAID_CACHE_MAX = 100;
+let mermaidSeq = 0;
+
+async function renderMermaid(source) {
+  const cached = mermaidCache.get(source);
+  if (cached) return cached;
+  const id = `mmd-${Date.now().toString(36)}-${mermaidSeq++}`;
+  const { svg } = await mermaid.render(id, source);
+  if (mermaidCache.size >= MERMAID_CACHE_MAX) mermaidCache.delete(mermaidCache.keys().next().value);
+  mermaidCache.set(source, svg);
+  return svg;
+}
+
+// Replace every ```mermaid block with its diagram, scaled to the text column.
+// On failure the source stays visible with the parser's message above it.
+async function renderDiagrams(root, { maxWidthPx, maxHeightPx }) {
+  const stats = { rendered: 0, failed: 0 };
+  const blocks = Array.from(root.querySelectorAll('pre > code.language-mermaid'));
+  for (const code of blocks) {
+    const pre = code.parentElement;
+    const source = code.textContent.replace(/\n$/, '');
+    try {
+      const svgText = await renderMermaid(source);
+      const figure = document.createElement('div');
+      figure.className = 'mermaid-diagram';
+      figure.innerHTML = svgText;
+      const svg = figure.querySelector('svg');
+      if (!svg) throw new Error('Mermaid returned no SVG');
+      fitSvg(svg, maxWidthPx, maxHeightPx);
+      pre.replaceWith(figure);
+      stats.rendered++;
+    } catch (err) {
+      const message = String(err && err.message ? err.message : err).split('\n').slice(0, 2).join(' ');
+      const note = document.createElement('div');
+      note.className = 'diagram-error';
+      note.textContent = `Mermaid could not render this diagram: ${message}`;
+      pre.classList.add('diagram-failed');
+      pre.before(note);
+      stats.failed++;
+    }
+  }
+  return stats;
+}
+
+// Mermaid emits width="100%" plus a max-width; give the SVG explicit dimensions
+// from its viewBox so it prints at natural size and shrinks only when needed.
+function fitSvg(svg, maxWidthPx, maxHeightPx) {
+  const viewBox = (svg.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+  let w = viewBox.length === 4 ? viewBox[2] : parseFloat(svg.getAttribute('width'));
+  let h = viewBox.length === 4 ? viewBox[3] : parseFloat(svg.getAttribute('height'));
+  if (!(w > 0) || !(h > 0)) {
+    svg.style.maxWidth = '100%';
+    svg.style.height = 'auto';
+    return;
+  }
+  const scale = Math.min(1, maxWidthPx / w, maxHeightPx / h);
+  svg.setAttribute('width', String(Math.round(w * scale)));
+  svg.setAttribute('height', String(Math.round(h * scale)));
+  svg.style.width = `${Math.round(w * scale)}px`;
+  svg.style.height = `${Math.round(h * scale)}px`;
+  svg.style.maxWidth = 'none';
+  svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+}
+
 // Paged.js loses leading whitespace when it splits a text node across pages
 // (pagedjs issue #45). Wrapping every line of a code block in its own block-
 // level span makes page breaks fall between whole lines and keeps indentation.
@@ -229,9 +308,10 @@ function wrapCodeLines(codeEl) {
   codeEl.innerHTML = out;
 }
 
-function markdownToDom(markdown, codeCharsPerLine = 80) {
+async function markdownToDom(markdown, { codeCharsPerLine = 80, maxDiagramWidthPx = 576, maxDiagramHeightPx = 600 } = {}) {
   const root = document.createElement('div');
   root.className = 'plan';
+  state.diagramStats = { rendered: 0, failed: 0 };
 
   if (!markdown.trim()) {
     const hint = document.createElement('p');
@@ -263,6 +343,10 @@ function markdownToDom(markdown, codeCharsPerLine = 80) {
     const items = Array.from(list.children).filter((c) => c.tagName === 'LI');
     if (items.length && items.every((li) => li.classList.contains('task'))) list.classList.add('task-list');
   });
+
+  // Mermaid first, so the generic code-block pass only sees real code (and
+  // diagrams that failed to render, which stay as source).
+  state.diagramStats = await renderDiagrams(root, { maxWidthPx: maxDiagramWidthPx, maxHeightPx: maxDiagramHeightPx });
 
   // Code blocks: language label, per-line wrapping, keep short blocks together.
   root.querySelectorAll('pre > code').forEach((code) => {
@@ -432,7 +516,11 @@ async function render() {
     // Approximate monospace characters per line: code is 0.8em of the body size
     // and JetBrains Mono advances about 0.6em per character.
     const codeCharsPerLine = Math.max(30, Math.floor((g.contentW * 72) / (0.8 * g.layout.bodyPt * 0.6)));
-    const root = markdownToDom(markdown, codeCharsPerLine);
+    const root = await markdownToDom(markdown, {
+      codeCharsPerLine,
+      maxDiagramWidthPx: g.contentW * 96,
+      maxDiagramHeightPx: g.contentH * 96 * 0.8, // leave room for a caption line and the heading above
+    });
     root.classList.toggle('page-break-h2', Boolean(state.settings.breakH2));
     state.furniture = currentFurniture(root);
     els.title.placeholder = state.autoTitle || 'from first heading';
@@ -744,6 +832,9 @@ async function init() {
     zoomFrame = requestAnimationFrame(applyZoom);
   }).observe(els.scroll);
 
+  // Mermaid measures text while laying out, so the UI fonts must be in first.
+  try { await document.fonts.ready; } catch { /* ignore */ }
+
   // First render: a fresh install shows the sample so the app is not an empty box.
   if (!els.editor.value.trim()) {
     await doSample();
@@ -763,6 +854,7 @@ async function init() {
         pages: state.pageCount,
         title: state.furniture ? state.furniture.title : '',
         renderMs: state.lastRenderMs,
+        diagrams: { ...state.diagramStats },
         error: state.lastError ? String(state.lastError.stack || state.lastError.message || state.lastError) : null,
       };
     },
