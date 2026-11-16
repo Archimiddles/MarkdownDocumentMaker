@@ -23,6 +23,11 @@ import '@fontsource/jetbrains-mono/latin-400.css';
 import '@fontsource/jetbrains-mono/latin-700.css';
 import './ui.css';
 
+// After ui.css on purpose: the annotate styles build on the app's own.
+import { renderBlocks } from './annotations/blocks.js';
+import { createAnnotations, readCachedAnnotations } from './annotations/index.js';
+import { initAnnotateUi } from './annotations/ui.js';
+
 // ---- Configuration ----------------------------------------------------------
 
 // All measurements in inches; they are written straight into the @page rule.
@@ -111,6 +116,9 @@ const els = {
   btnPdf: $('btn-pdf'),
   btnPrint: $('btn-print'),
   btnToggleEditor: $('btn-toggle-editor'),
+  btnAnnotate: $('btn-annotate'),
+  annoBar: $('anno-bar'),
+  annoPane: $('anno-pane'),
 };
 
 const api = window.planPrinter;
@@ -125,6 +133,15 @@ const state = {
   lastRenderMs: 0,
   lastError: null,
   diagramStats: { rendered: 0, failed: 0 },
+  // The open document. hasFile is true when main.js knows a path for it, which
+  // is what lets notes be saved in a sidecar file beside it. id is main.js's
+  // name for that file (never the path itself); it travels with every save so
+  // notes can never be written beside a different document.
+  doc: { name: '', hasFile: false, id: '' },
+  // Where each block of the last render sits in the Markdown source:
+  // { src, blocks: [{ start, end, type }], exact }. Used by the annotations.
+  source: null,
+  annotate: false, // Annotate mode on?
 };
 
 function sanitizeSettings(raw) {
@@ -160,11 +177,13 @@ function saveSettings() {
 }
 
 let saveMdTimer = null;
+function saveMarkdownNow() {
+  clearTimeout(saveMdTimer);
+  try { localStorage.setItem(STORAGE_MARKDOWN, els.editor.value); } catch { /* ignore */ }
+}
 function saveMarkdownSoon() {
   clearTimeout(saveMdTimer);
-  saveMdTimer = setTimeout(() => {
-    try { localStorage.setItem(STORAGE_MARKDOWN, els.editor.value); } catch { /* ignore */ }
-  }, 800);
+  saveMdTimer = setTimeout(saveMarkdownNow, 800);
 }
 
 // ---- Markdown -> DOM ----------------------------------------------------------
@@ -184,6 +203,24 @@ const marked = new Marked(
   }),
 );
 marked.setOptions({ gfm: true, breaks: false });
+
+// ---- Annotations ---------------------------------------------------------------
+
+// Highlights, mark-up and margin notes. Everything about them lives in
+// ./annotations/; this file only tells that module when the pages have been
+// rebuilt and which document is open.
+const anno = createAnnotations({
+  marked,
+  api,
+  pagesEl: els.pages,
+  getSource: () => state.source,
+  getDocument: () => state.doc,
+  getText: () => els.editor.value,
+  // Notes can only be made in Annotate mode, and never while the pages are
+  // being rebuilt (they are about to be replaced).
+  canEdit: () => state.annotate && !renderOutstanding(),
+  setStatus: (text, isError) => setStatus(text, isError),
+});
 
 function escapeHtml(s) {
   return String(s)
@@ -236,6 +273,8 @@ async function renderDiagrams(root, { maxWidthPx, maxHeightPx }) {
       const svgText = await renderMermaid(source);
       const figure = document.createElement('div');
       figure.className = 'mermaid-diagram';
+      // The diagram replaces the <pre>, so carry its block number across.
+      if (pre.dataset.block) figure.dataset.block = pre.dataset.block;
       figure.innerHTML = svgText;
       const svg = figure.querySelector('svg');
       if (!svg) throw new Error('Mermaid returned no SVG');
@@ -319,6 +358,7 @@ async function markdownToDom(markdown, { codeCharsPerLine = 80, maxDiagramWidthP
   state.diagramStats = { rendered: 0, failed: 0 };
 
   if (!markdown.trim()) {
+    state.source = { src: '', blocks: [], exact: true };
     const hint = document.createElement('p');
     hint.className = 'empty-hint';
     hint.textContent = 'Paste a plan into the editor to see it here.';
@@ -326,11 +366,35 @@ async function markdownToDom(markdown, { codeCharsPerLine = 80, maxDiagramWidthP
     return root;
   }
 
-  const raw = marked.parse(markdown);
+  // Same HTML as marked.parse(), plus a data-block="N" number on every block
+  // and a record of where block N sits in the Markdown source.
+  const stamp = `b${Math.random().toString(36).slice(2, 10)}-`;
+  const { html, blocks, src, exact } = renderBlocks(marked, markdown, { stamp });
+  state.source = { src, blocks, exact };
   // <style> would restyle the whole app; forms have no place in a printout.
-  root.innerHTML = DOMPurify.sanitize(raw, {
+  root.innerHTML = DOMPurify.sanitize(html, {
     USE_PROFILES: { html: true },
     FORBID_TAGS: ['style', 'form', 'button', 'select', 'textarea'],
+  });
+  // Only our own stamps count. A block number is kept when it carries this
+  // render's random stamp; anything else called data-block arrived through
+  // raw HTML written inside the document and is dropped. The same goes for
+  // the attributes and class names the annotation code uses on the page.
+  root.querySelectorAll('[data-block]').forEach((el) => {
+    const value = el.getAttribute('data-block');
+    if (el.parentElement === root && value.startsWith(stamp) && /^\d+$/.test(value.slice(stamp.length))) {
+      el.setAttribute('data-block', value.slice(stamp.length));
+    } else {
+      el.removeAttribute('data-block');
+    }
+  });
+  root.querySelectorAll('[data-anno], [data-anno-block], [data-label], [data-anno-label], [data-n], [data-wide]').forEach((el) => {
+    for (const name of ['data-anno', 'data-anno-block', 'data-label', 'data-anno-label', 'data-n', 'data-wide']) el.removeAttribute(name);
+  });
+  root.querySelectorAll('[class*="anno"], .margin-notes, .pagedjs_hyphen').forEach((el) => {
+    for (const name of Array.from(el.classList)) {
+      if (/^anno(-|$)/.test(name) || name === 'margin-notes' || name === 'pagedjs_hyphen') el.classList.remove(name);
+    }
   });
 
   // Task-list checkboxes -> CSS-drawn boxes that print consistently.
@@ -434,6 +498,9 @@ function buildPageCss(settings) {
     `:root { --notes-height: ${g.notesH}in; --body-pt: ${g.layout.bodyPt}pt; }`,
     '',
     pageCss,
+    // One rule per annotation label, e.g.
+    // [data-label="question"] { --anno-color: #cfe4ff; --anno-ink: #1a56b0; }
+    anno.labelCss(),
   ].join('\n');
 }
 
@@ -480,6 +547,13 @@ class FurnitureHandler extends Handler {
     const f = state.furniture;
     if (!f) return;
     pages.forEach((page, i) => decoratePage(page.element, i + 1, pages.length, f));
+    // The pages are final: this app rebuilds them from scratch on any change.
+    // Paged.js would otherwise keep watching each page for size changes and
+    // try to re-flow it, which fails (with an error in the console) once
+    // annotation marks have split the page's text.
+    pages.forEach((page) => {
+      try { page.removeListeners(); } catch { /* an older or newer Paged.js */ }
+    });
   }
 }
 registerHandlers(FurnitureHandler); // once, at module load
@@ -516,6 +590,8 @@ async function render() {
   setStatus('Rendering…');
   const t0 = performance.now();
   try {
+    // The pages are about to be thrown away: keep a note that is mid-edit.
+    anno.commitEdits();
     const markdown = els.editor.value;
     const g = geometry(state.settings);
     // Approximate monospace characters per line: code is 0.8em of the body size
@@ -545,10 +621,22 @@ async function render() {
     const fragment = document.createDocumentFragment();
     fragment.appendChild(root);
     const flow = await previewer.preview(fragment, [{ [window.location.href]: css }], els.pages);
+    // The pages are final. Marks and note cards are painted on top; neither
+    // changes where any text sits. A failure here must never cost the render.
+    try {
+      anno.paint();
+    } catch (err) {
+      console.error(err);
+    }
     state.pageCount = flow.total;
     state.lastRenderMs = Math.round(performance.now() - t0);
     applyZoom();
-    setStatus(`${flow.total} page${flow.total === 1 ? '' : 's'} · rendered in ${state.lastRenderMs} ms`);
+    const rendered = `${flow.total} page${flow.total === 1 ? '' : 's'} · rendered in ${state.lastRenderMs} ms`;
+    // Anything the user should know about this document's notes (the file
+    // could not be read, some notes lost their text) is said here, where a
+    // later "Opened ..." message cannot paint over it, and stays in the notes list.
+    if (anno.notice) setStatus(`${rendered} · ${anno.notice}`, true);
+    else setStatus(rendered);
   } catch (err) {
     console.error(err);
     state.lastError = err;
@@ -648,10 +736,15 @@ function syncControls() {
   const usesMarginColumn = Boolean((LAYOUTS[s.layout] || LAYOUTS.review).marginColumn);
   els.notes.disabled = usesMarginColumn;
   els.notes.title = usesMarginColumn ? 'The Margin notes layout uses the right-hand column instead of a bottom box.' : '';
+  // Typed margin notes need the wide column, so the layout is fixed while annotating.
+  els.layout.disabled = state.annotate;
+  els.layout.title = state.annotate ? 'Annotate mode always uses the Margin notes layout.' : '';
   els.title.value = s.title || '';
   els.date.value = s.date || '';
   els.app.classList.toggle('editor-hidden', !s.editorVisible);
   els.btnToggleEditor.textContent = s.editorVisible ? 'Hide editor' : 'Show editor';
+  // In Annotate mode the notes list takes the editor's place.
+  els.btnToggleEditor.disabled = state.annotate;
 }
 
 function setStatus(text, isError = false) {
@@ -664,8 +757,15 @@ function updateStatusRight() {
   const notes = g.layout.marginColumn
     ? `${(g.layout.right - 0.8).toFixed(1)} in margin column`
     : (g.notesH > 0 ? `${g.notesH} in notes box` : 'no notes box');
+  // Margin cards only have room in the Margin notes layout; say so rather
+  // than let typed notes silently disappear in the other layouts.
+  const typed = g.layout.marginColumn ? 0 : anno.items().filter((it) => it.note).length;
+  let hiddenNotes = typed ? ` · ${typed} typed note${typed === 1 ? '' : 's'} hidden (shown in the Margin notes layout)` : '';
+  // A page with more notes than its margin holds shows them shortened.
+  const crowded = anno.stats().overflowPages;
+  if (crowded.length) hiddenNotes += ` · notes on page ${crowded.join(', ')} shortened to fit`;
   els.statusRight.textContent =
-    `${g.layout.label.split(' — ')[0]} · ${g.paper.label} · text area ${g.contentW} × ${g.contentH} in · ${notes}`;
+    `${g.layout.label.split(' — ')[0]} · ${g.paper.label} · text area ${g.contentW} × ${g.contentH} in · ${notes}${hiddenNotes}`;
 }
 
 function bindSetting(el, key, { rerender = true, prop = 'value' } = {}) {
@@ -684,34 +784,127 @@ function setMarkdown(text) {
   scheduleRender(0);
 }
 
+// The one place that switches the app to a different document: its text, its
+// name, and any notes saved beside it. `tracked` is true when main.js knows a
+// file path for it (so notes can be saved in a sidecar file).
+function adoptDocument({ name = '', text = '', annotations = null, sidecar = null, docId = '' }, tracked = false) {
+  const hasFile = Boolean(tracked && docId);
+  state.doc = { name, hasFile, id: hasFile ? docId : '' };
+  setMarkdown(text);
+  saveMarkdownNow(); // text and notes must be remembered as a pair
+  anno.load(annotations, { status: sidecar ? sidecar.status : 'none' });
+  // Notes from a newer version of the app are left alone: no annotating.
+  if (state.annotate && anno.readOnly) setAnnotateMode(false);
+}
+
+// Opening, pasting, loading the sample or clearing replaces the document. If
+// its notes are not in a file (there is no file, or it could not be written),
+// ask before they are thrown away.
+function okToReplaceDocument() {
+  anno.flush(); // a change made a moment ago may simply not have been written yet
+  if (!anno.notOnDisk()) return true;
+  return window.confirm(
+    'This document has notes that are not saved beside a file.\n\n'
+    + 'Replace it anyway? (Cancel, then use File → Save Markdown As… to keep them.)',
+  );
+}
+
+// Replace the document with text that has no file behind it.
+async function adoptLooseText(text, name = '') {
+  anno.flush(); // the outgoing document's last change must reach its own notes file
+  await api.forgetDocument();
+  adoptDocument({ name, text }, false);
+}
+
 async function doOpen(claudePlans = false) {
+  anno.flush(); // finish saving the current document's notes first
+  if (!okToReplaceDocument()) return;
   const file = await api.openMarkdown({ claudePlans });
   if (!file) return;
   if (file.error) {
     setStatus(`Could not open file: ${file.error}`, true);
     return;
   }
-  setMarkdown(file.text);
+  // "All files" can open a non-Markdown file; it has nowhere to keep notes
+  // (main.js then sends no docId).
+  adoptDocument(file, Boolean(file.docId));
   setStatus(`Opened ${file.name}`);
 }
 
 async function doSave() {
   const r = await api.saveMarkdown(els.editor.value, state.furniture ? state.furniture.title : 'plan');
-  if (r && r.ok) setStatus(`Saved ${r.path}`);
-  else if (r && r.error) setStatus(`Could not save: ${r.error}`, true);
+  if (r && r.ok) {
+    // Notes now have a home: write them beside the file that was just saved.
+    // (A document that has never been annotated gets no sidecar file.)
+    state.doc = { name: r.name || state.doc.name, hasFile: Boolean(r.docId), id: r.docId || '' };
+    if (anno.count() > 0) await anno.saveNow();
+    setStatus(`Saved ${r.path}`);
+  } else if (r && r.error) {
+    setStatus(`Could not save: ${r.error}`, true);
+  }
+}
+
+async function doExportAnnotatedMd() {
+  if (renderOutstanding()) await renderNow();
+  anno.commitEdits();
+  const base = (state.doc.name || (state.furniture ? state.furniture.title : 'plan')).replace(/\.(md|markdown|txt)$/i, '');
+  const r = await api.exportAnnotatedMd(anno.exportMarkdown(), base);
+  if (r && r.ok) setStatus(`Annotated Markdown saved: ${r.path}`);
+  else if (r && r.error) setStatus(`Export failed: ${r.error}`, true);
+}
+
+async function doCopyForLlm() {
+  if (renderOutstanding()) await renderNow();
+  anno.commitEdits();
+  const r = await api.writeClipboard(anno.exportMarkdown());
+  if (r && r.ok) setStatus('Annotated Markdown copied. Paste it into your LLM.');
+  else setStatus('Could not copy to the clipboard', true);
+}
+
+// Annotate mode: the text is locked so notes cannot drift, the layout
+// switches to Margin notes (typed notes need the wide column), and the notes
+// list takes the editor's place.
+function setAnnotateMode(on) {
+  if (state.annotate === on) return;
+  if (on && anno.readOnly) {
+    setStatus(anno.notice || 'Annotating is off for this document.', true);
+    return;
+  }
+  if (!on) anno.commitEdits();
+  state.annotate = on;
+  els.app.classList.toggle('annotating', on);
+  els.editor.readOnly = on;
+  els.annoBar.hidden = !on;
+  els.annoPane.hidden = !on;
+  if (on && state.settings.layout !== 'margin') {
+    state.settings.layout = 'margin';
+    saveSettings();
+    scheduleRender(0);
+  }
+  syncControls();
+  updateStatusRight();
+  applyZoom(); // the preview's width just changed
+  setStatus(on
+    ? 'Annotate mode: select text to highlight it or add a note. The Markdown is locked while this is on.'
+    : `${state.pageCount} page${state.pageCount === 1 ? '' : 's'}`);
 }
 
 async function doExportPdf() {
   if (renderOutstanding()) await renderNow();
+  anno.commitEdits();
   setStatus('Exporting PDF…');
   const r = await api.exportPdf({ paper: state.settings.paper, title: state.furniture ? state.furniture.title : 'plan' });
-  if (r && r.ok) setStatus(`PDF saved: ${r.path}`);
+  const crowded = anno.stats().overflowPages;
+  if (r && r.ok && crowded.length && !anno.hidden) {
+    setStatus(`PDF saved: ${r.path}. Notes on page ${crowded.join(', ')} are shortened to fit the margin; the Markdown export has them in full.`, true);
+  } else if (r && r.ok) setStatus(`PDF saved: ${r.path}`);
   else if (r && r.error) setStatus(`PDF export failed: ${r.error}`, true);
   else setStatus(`${state.pageCount} pages`);
 }
 
 async function doPrint() {
   if (renderOutstanding()) await renderNow();
+  anno.commitEdits();
   setStatus('Opening print dialog…');
   const r = await api.print();
   if (r && r.ok) setStatus('Sent to printer');
@@ -721,7 +914,8 @@ async function doPrint() {
 async function doPaste() {
   const text = await api.readClipboard();
   if (text && text.trim()) {
-    setMarkdown(text);
+    if (!okToReplaceDocument()) return;
+    await adoptLooseText(text);
     setStatus('Pasted from clipboard');
   } else {
     setStatus('Clipboard has no text', true);
@@ -729,8 +923,42 @@ async function doPaste() {
 }
 
 async function doSample() {
-  setMarkdown(await api.loadSample());
+  if (!okToReplaceDocument()) return;
+  await adoptLooseText(await api.loadSample());
   setStatus('Loaded sample plan');
+}
+
+async function doClear() {
+  if (!okToReplaceDocument()) return;
+  await adoptLooseText('');
+  setStatus('Cleared');
+}
+
+// On start-up the editor text comes back from the last session; bring its
+// notes back too. They come from the sidecar file when main.js still knows
+// the document, otherwise from the copy kept inside the app.
+async function restoreAnnotations() {
+  let resumed = null;
+  try { resumed = await api.resumeDocument(); } catch { /* no remembered file */ }
+  const cached = readCachedAnnotations(); // { doc, unsynced, data } or null
+  if (!resumed || !resumed.docId) {
+    // No file behind the text: the copy inside the app is all there is. It is
+    // kept in step with the editor text, so it belongs to what was restored.
+    state.doc = { name: '', hasFile: false, id: '' };
+    anno.load(cached ? cached.data : null);
+    return;
+  }
+  state.doc = { name: resumed.name, hasFile: true, id: resumed.docId };
+  const status = resumed.sidecar ? resumed.sidecar.status : 'none';
+  // The file is the truth. The copy inside the app is used only when it is
+  // for this very document AND holds changes that never reached the file
+  // (the app closed, or the folder could not be written, before they did).
+  // A file that was replaced or deleted while the app was closed wins.
+  if (cached && cached.doc === resumed.docId && cached.unsynced) {
+    anno.load(cached.data, { status, unsaved: true });
+  } else {
+    anno.load(resumed.annotations, { status });
+  }
 }
 
 function toggleEditor() {
@@ -791,9 +1019,22 @@ async function init() {
     els.editorPane.classList.remove('dragover');
     const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
     if (!file) return;
+    if (!okToReplaceDocument()) return;
+    anno.flush();
     try {
-      setMarkdown(await file.text());
-      setStatus(`Loaded ${file.name}`);
+      // main.js reads a Markdown file itself, so it also learns where its
+      // notes belong. The page never sees the full path.
+      const doc = await api.openDropped(file);
+      if (doc && doc.error) {
+        setStatus(`Could not read ${file.name}: ${doc.error}`, true);
+      } else if (doc && typeof doc.text === 'string') {
+        adoptDocument(doc, Boolean(doc.docId));
+        setStatus(`Loaded ${doc.name}`);
+      } else {
+        // Any other kind of file still opens, as text with no file behind it.
+        await adoptLooseText(await file.text(), file.name);
+        setStatus(`Loaded ${file.name}`);
+      }
     } catch (err) {
       setStatus(`Could not read ${file.name}: ${err.message || err}`, true);
     }
@@ -803,17 +1044,57 @@ async function init() {
   els.btnOpenPlans.addEventListener('click', () => doOpen(true));
   els.btnPaste.addEventListener('click', doPaste);
   els.btnSample.addEventListener('click', doSample);
-  els.btnClear.addEventListener('click', () => { setMarkdown(''); setStatus('Cleared'); });
+  els.btnClear.addEventListener('click', doClear);
   els.btnPdf.addEventListener('click', doExportPdf);
   els.btnPrint.addEventListener('click', doPrint);
   els.btnToggleEditor.addEventListener('click', toggleEditor);
 
   // Links inside the preview open in the system browser, never in the app.
+  // While annotating, a plain click on a link is far more likely to be the
+  // end of a text selection, so only Ctrl/Cmd+click follows it.
   els.pages.addEventListener('click', (e) => {
     const a = e.target.closest && e.target.closest('a[href]');
     if (!a) return;
     e.preventDefault();
+    if (state.annotate && !(e.ctrlKey || e.metaKey)) return;
     if (/^https?:\/\//i.test(a.href)) api.openExternal(a.href);
+  });
+
+  // While annotating, a drag is always a text selection, never the browser
+  // picking up a link or an image to drag it somewhere.
+  els.pages.addEventListener('dragstart', (e) => {
+    if (state.annotate) e.preventDefault();
+  });
+
+  // The annotate tool bar, pop-up menu, notes list and shortcuts.
+  const annotateUi = initAnnotateUi({
+    anno,
+    els: {
+      app: els.app,
+      pages: els.pages,
+      scroll: els.scroll,
+      inner: els.inner,
+      annoBar: els.annoBar,
+      annoPane: els.annoPane,
+      btnAnnotate: els.btnAnnotate,
+    },
+    actions: {
+      isAnnotating: () => state.annotate,
+      setAnnotateMode: (on) => { setAnnotateMode(Boolean(on)); annotateUi.refresh(); },
+      isBusy: () => renderOutstanding(),
+      exportMarkdown: doExportAnnotatedMd,
+      copyForLlm: doCopyForLlm,
+      setStatus,
+    },
+  });
+  anno.onChange(updateStatusRight);
+
+  // Closing or reloading the window: write any unsaved notes first, and the
+  // editor text with them (it is normally saved a moment after each change;
+  // quitting inside that moment must not pair old text with new notes).
+  window.addEventListener('beforeunload', () => {
+    saveMarkdownNow();
+    anno.flush();
   });
 
   api.onMenu((action) => {
@@ -822,8 +1103,10 @@ async function init() {
       'open-plans': () => doOpen(true),
       'save': doSave,
       'export-pdf': doExportPdf,
+      'export-annotated-md': doExportAnnotatedMd,
       'print': doPrint,
-      'toggle-editor': toggleEditor,
+      'toggle-editor': () => { if (!state.annotate) toggleEditor(); },
+      'toggle-annotate': () => { setAnnotateMode(!state.annotate); annotateUi.refresh(); },
       'sample': doSample,
     };
     if (actions[action]) actions[action]();
@@ -850,6 +1133,7 @@ async function init() {
   if (!els.editor.value.trim()) {
     await doSample();
   } else {
+    await restoreAnnotations();
     scheduleRender(0);
   }
 
@@ -857,6 +1141,12 @@ async function init() {
   // only after the initial load so a late sample load cannot clobber a scenario.
   window.__planPrinterTest = {
     async apply(settings, markdown) {
+      // Every scenario starts clean: no file, no notes, Annotate mode off,
+      // nothing hidden.
+      setAnnotateMode(false);
+      anno.setHidden(false);
+      state.doc = { name: '', hasFile: false, id: '' };
+      anno.load(null);
       Object.assign(state.settings, settings || {});
       syncControls();
       if (typeof markdown === 'string') els.editor.value = markdown;
@@ -870,6 +1160,126 @@ async function init() {
       };
     },
     geometry: () => geometry(state.settings),
+    // Load a saved annotation set, re-render, report how many notes attached.
+    async annotate(sidecar) {
+      anno.load(sidecar);
+      await renderNow();
+      return anno.stats(); // { total, placed, unplaced, cards, overflowPages }
+    },
+    // Make one annotation the way a user does: find the words on the page,
+    // select them, and go through the same code as a mouse selection.
+    async annotateQuote(quote, { kind = 'highlight', label = 'note', note = '' } = {}) {
+      if (renderOutstanding()) await renderNow();
+      setAnnotateMode(true);
+      if (renderOutstanding()) await renderNow();
+      const walker = document.createTreeWalker(els.pages, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const at = node.nodeValue.indexOf(quote);
+        if (at === -1 || !node.parentElement.closest('[data-block]')) continue;
+        const range = document.createRange();
+        range.setStart(node, at);
+        range.setEnd(node, at + quote.length);
+        const id = anno.create({ kind, label, note, targets: anno.targetsFromRange(range) });
+        return { id, stats: anno.stats() };
+      }
+      return { id: null, stats: anno.stats() };
+    },
+    // Highlight the whole of the first block that Paged.js split across two
+    // pages, so a mark that has to be painted on both pages is exercised.
+    async annotateAcrossBreak() {
+      if (renderOutstanding()) await renderNow();
+      setAnnotateMode(true);
+      if (renderOutstanding()) await renderNow();
+      const seen = new Map();
+      for (const el of els.pages.querySelectorAll('[data-block]')) {
+        const n = el.dataset.block;
+        if (!seen.has(n)) seen.set(n, []);
+        seen.get(n).push(el);
+      }
+      for (const pieces of seen.values()) {
+        const pages = new Set(pieces.map((el) => el.closest('.pagedjs_page')));
+        if (pages.size < 2 || !pieces[0].textContent.trim()) continue;
+        const range = document.createRange();
+        range.setStartBefore(pieces[0]);
+        range.setEndAfter(pieces[pieces.length - 1]);
+        const id = anno.create({ kind: 'highlight', label: 'note', targets: anno.targetsFromRange(range) });
+        const marked = new Set(Array.from(els.pages.querySelectorAll('mark.anno')).map((m) => m.closest('.pagedjs_page')));
+        return { id, pagesWithMarks: marked.size };
+      }
+      return { id: null, pagesWithMarks: 0 };
+    },
+    async settle() {
+      if (renderOutstanding()) await renderNow();
+      return true;
+    },
+    // Change settings but keep the notes (apply() starts each scenario clean).
+    async relayout(settings) {
+      Object.assign(state.settings, settings || {});
+      syncControls();
+      await renderNow();
+      return anno.stats();
+    },
+    async replaceMarkdown(markdown) {
+      els.editor.value = markdown;
+      await renderNow();
+      return anno.stats();
+    },
+    // Behave as if this document had just been opened from disk. `doc` is
+    // what main.js's loadDocument() returns.
+    async adoptFile(doc) {
+      adoptDocument(doc, Boolean(doc && doc.docId));
+      await renderNow();
+      return anno.stats();
+    },
+    // Write the notes through the real bridge now, instead of in half a second.
+    async saveNotes() {
+      await anno.saveNow();
+      return true;
+    },
+    // What start-up does: ask main.js for the last document and its notes.
+    async restore() {
+      await restoreAnnotations();
+      await renderNow();
+      return anno.stats();
+    },
+    // How many marks actually show colour or a line (none while hidden).
+    paintedMarks: () => Array.from(els.pages.querySelectorAll('mark.anno')).filter((m) => {
+      const style = getComputedStyle(m);
+      return style.backgroundColor !== 'rgba(0, 0, 0, 0)' || style.textDecorationLine !== 'none';
+    }).length,
+    setAnnotateMode: (on) => setAnnotateMode(Boolean(on)),
+    setAnnotationsHidden: (on) => anno.setHidden(on),
+    annotationStats: () => anno.stats(),
+    annotationItems: () => anno.items(),
+    annotatedMarkdown: () => anno.exportMarkdown(),
+    sidecar: () => anno.toSidecar(),
+    pageCount: () => state.pageCount,
+    // Where every line of text sits on the pages (in page pixels, so zoom and
+    // scrolling do not matter), for checking that annotations move nothing.
+    lineBoxes() {
+      const origin = els.pages.getBoundingClientRect();
+      const scale = (origin.width / els.pages.offsetWidth) || 1;
+      const px = (v, from) => Math.round((v - from) / scale);
+      const lines = new Map(); // top -> { bottom, left, right } of that line
+      const walker = document.createTreeWalker(els.pages, NodeFilter.SHOW_TEXT);
+      const range = document.createRange();
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        // Whitespace-only nodes are measured too: a highlight turns the space
+        // after it into a node of its own, and it must count both times.
+        if (!node.parentElement.closest('.pagedjs_page_content')) continue;
+        range.selectNodeContents(node);
+        for (const r of range.getClientRects()) {
+          if (!r.width) continue;
+          const top = px(r.top, origin.top);
+          const line = lines.get(top) || { bottom: -Infinity, left: Infinity, right: -Infinity };
+          line.bottom = Math.max(line.bottom, px(r.bottom, origin.top));
+          line.left = Math.min(line.left, px(r.left, origin.left));
+          line.right = Math.max(line.right, px(r.right, origin.left));
+          lines.set(top, line);
+        }
+      }
+      return Array.from(lines, ([top, l]) => `${top}:${l.bottom}:${l.left}:${l.right}`).sort();
+    },
   };
 }
 

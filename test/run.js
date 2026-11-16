@@ -5,6 +5,8 @@
 //   - the PDF page count equals the page count Paged.js showed in the preview
 //   - the PDF page size matches the selected paper
 //   - scenario-specific expectations (minimum pages, H2 breaks add pages, ...)
+//   - annotation scenarios: notes attach, no line of text moves, margin notes
+//     are real text in the PDF (pdftotext), the Markdown export matches
 // Usage: node test/run.js [--no-sandbox]
 const { spawnSync, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -22,6 +24,13 @@ const sample = path.join(root, 'samples', 'sample-plan.md');
 const edge = path.join(__dirname, 'fixtures', 'edge-cases.md');
 const mermaidDoc = path.join(__dirname, 'fixtures', 'mermaid.md');
 const sampleText = fs.readFileSync(sample, 'utf8');
+// Annotation fixtures: a saved set of notes on the sample plan, the same plan
+// after an edit, and the Markdown export those notes should produce.
+const sampleNotes = path.join(__dirname, 'fixtures', 'sample.annotations.json');
+const sampleEdited = path.join(__dirname, 'fixtures', 'sample-edited.md');
+const sampleAnnotatedMd = path.join(__dirname, 'fixtures', 'sample.annotated.md');
+const margin = { layout: 'margin', paper: 'letter', notes: 'medium', pattern: 'dots', breakH2: false };
+const noteCount = fs.existsSync(sampleNotes) ? JSON.parse(fs.readFileSync(sampleNotes, 'utf8')).annotations.length : 0;
 
 const scenarios = [
   { name: 'review-letter-medium-dots', settings: { layout: 'review', paper: 'letter', notes: 'medium', pattern: 'dots', breakH2: false }, minPages: 2 },
@@ -35,12 +44,62 @@ const scenarios = [
   { name: 'empty-review-letter', settings: { layout: 'review', paper: 'letter', notes: 'medium', pattern: 'dots', breakH2: false }, md: '', minPages: 1, maxPages: 1 },
   { name: 'mermaid-review-letter', settings: { layout: 'review', paper: 'letter', notes: 'medium', pattern: 'dots', breakH2: false }, mdFile: mermaidDoc, minPages: 2, expectDiagrams: { rendered: 5, failed: 1 } },
   { name: 'mermaid-margin-letter', settings: { layout: 'margin', paper: 'letter', notes: 'none', pattern: 'dots', breakH2: false }, mdFile: mermaidDoc, minPages: 2, expectDiagrams: { rendered: 5, failed: 1 } },
+
+  // ---- Annotations ----
+  // A saved set of notes loads, every note attaches, nothing on the page moves,
+  // the margin notes are real text in the PDF, and the export is as expected.
+  { name: 'annotated-margin-letter', settings: margin, annotationsFile: sampleNotes, minPages: 2, samePagesAs: 'margin-letter-dots', expectNotes: { placed: noteCount, unplaced: 0 }, linesMustNotMove: true, marginHasNotes: true, expectMd: sampleAnnotatedMd, expectPainted: 'some' },
+  // Notes made the way a user makes them: select the words, pick a tool.
+  { name: 'annotated-by-selection', settings: margin, minPages: 2, samePagesAs: 'margin-letter-dots', linesMustNotMove: true,
+    quotes: [
+      { quote: 'refilled lazily on read', kind: 'highlight', label: 'question', note: 'Why lazily? What happens under burst load?' },
+      { quote: 'fail open rather than fail closed', kind: 'strike', label: 'change', note: '' },
+      { quote: 'Maximum burst per key', kind: 'underline', label: 'keep', note: 'Good default.' },
+    ],
+    expectNotes: { placed: 3, unplaced: 0, cards: 2 },
+    marginText: ['Why lazily? What happens under burst load?', 'Good default.'],
+    mdText: ['{==refilled lazily on read==}{>>[question] Why lazily? What happens under burst load?<<}', '{--fail open rather than fail closed--}{>>[change]<<}', '{==Maximum burst per key==}{>>[underline, keep] Good default.<<}'] },
+  // A highlight on a block that Paged.js split across two pages is painted on
+  // both pages and costs no text (same PDF text as the un-annotated run).
+  { name: 'edge-cases-margin-letter', settings: margin, mdFile: edge, minPages: 2 },
+  { name: 'annotated-page-break', settings: margin, mdFile: edge, acrossBreak: true, minPages: 2, samePagesAs: 'edge-cases-margin-letter', samePdfTextAs: 'edge-cases-margin-letter', linesMustNotMove: true, expectAcrossBreak: true },
+  // The same notes still attach after the pages are laid out differently.
+  { name: 'annotated-relayout', settings: margin, annotationsFile: sampleNotes, relayout: { paper: 'a4', breakH2: true }, minPages: 2, expectNotes: { placed: noteCount, unplaced: 0 } },
+  // After an edit (one paragraph added, one annotated sentence deleted) every
+  // other note finds its words again and the lost one is kept as "unplaced".
+  // (The export is checked too: each surviving note must be on its own words, not merely "placed".)
+  { name: 'reanchor-after-edit', settings: margin, annotationsFile: sampleNotes, editedMdFile: sampleEdited, minPages: 2, expectNotes: { placed: noteCount - 1, unplaced: 1 },
+    mdText: ['Unplaced reviewer notes',
+      '{==roughly 40k requests in ten minutes==}{>>[important] Add the source for this figure.<<}',
+      '{==refilled lazily on read==}{>>[question] Why lazily? What happens under burst load?<<}',
+      '{==Maximum burst per key==}{>>[underline, keep] Good default.<<}',
+      '{==Integration: 601 requests in a burst produce exactly one==}{>>[question] Why 601 and not 600?<<}',
+      '{==**Clock skew between app nodes.**==}{>>[important]<<}',
+      'On "The read-modify-write above is racy under concurrency."'] },
+  // "Hide" gives a clean printout: same pages, no note text, no colour.
+  { name: 'annotated-hidden', settings: margin, annotationsFile: sampleNotes, hidden: true, minPages: 2, samePagesAs: 'margin-letter-dots', marginHasNotes: false, expectPainted: 'none' },
+  // A document with a real file behind it: notes are written to a sidecar
+  // beside it through the real save path, the Markdown itself is untouched,
+  // and after "the app restarts" the notes come back FROM THE FILE (one note
+  // is removed from the file in between; the app must not put it back).
+  { name: 'sidecar-roundtrip', settings: margin, mdFile: sample, docFile: sample, minPages: 2,
+    quotes: [
+      { quote: 'refilled lazily on read', kind: 'highlight', label: 'question', note: 'Why lazily?' },
+      { quote: 'Maximum burst per key', kind: 'underline', label: 'keep', note: 'Good default.' },
+      { quote: 'Sustained rate', kind: 'highlight', label: 'note', note: '' },
+    ],
+    expectPersist: { status: 'ok', saved: 3, restored: 2, markdownUntouched: true },
+    expectNotes: { placed: 2, unplaced: 0 } },
+  // Opening a file and never annotating it leaves no notes file behind.
+  { name: 'file-without-notes', settings: margin, mdFile: sample, docFile: sample, minPages: 2,
+    expectPersist: { status: 'none', restored: 0, sidecarExists: false, markdownUntouched: true } },
 ];
 
 const env = {
   ...process.env,
   PLAN_PRINTER_TEST_OUT: out,
-  PLAN_PRINTER_TEST_SCENARIOS: JSON.stringify(scenarios.map(({ name, settings, md, mdFile }) => ({ name, settings, md, mdFile }))),
+  PLAN_PRINTER_TEST_SCENARIOS: JSON.stringify(scenarios.map(({ name, settings, md, mdFile, annotationsFile, quotes, acrossBreak, relayout, editedMdFile, hidden, docFile }) => (
+    { name, settings, md, mdFile, annotationsFile, quotes, acrossBreak, relayout, editedMdFile, hidden, docFile }))),
 };
 
 console.log(`Launching Electron test mode (${scenarios.length} scenarios)…`);
@@ -81,6 +140,15 @@ function pdfInfo(file) {
   return { pages, width: size ? Number(size[1]) : NaN, height: size ? Number(size[2]) : NaN };
 }
 
+// All the text of a PDF, or only the text in the right-hand margin column of a
+// US Letter page in the Margin notes layout (where typed notes are printed).
+function pdfText(file, marginOnly = false) {
+  const crop = marginOnly ? ['-r', '72', '-x', '425', '-y', '0', '-W', '187', '-H', '792'] : [];
+  return execFileSync('pdftotext', [...crop, file, '-'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+}
+// Notes wrap in the narrow column, so compare with all whitespace removed.
+const squeeze = (t) => String(t).replace(/\s+/g, '');
+
 const EXPECTED_SIZE = { letter: [612, 792], a4: [595.28, 841.89] };
 const byName = {};
 let failures = 0;
@@ -97,7 +165,7 @@ for (const scenario of scenarios) {
     let info = { pages: NaN, width: NaN, height: NaN };
     try { info = pdfInfo(pdfPath); } catch (e) { problems.push(`pdfinfo failed: ${e.message}`); }
     byName[scenario.name] = { ...r, pdfPages: info.pages };
-    const [ew, eh] = EXPECTED_SIZE[scenario.settings.paper];
+    const [ew, eh] = EXPECTED_SIZE[{ ...scenario.settings, ...(scenario.relayout || {}) }.paper];
     if (Math.abs(info.width - ew) > 1 || Math.abs(info.height - eh) > 1) problems.push(`page size ${info.width}x${info.height}pt, expected ${ew}x${eh}`);
     if (info.pages !== r.previewPages) problems.push(`PDF has ${info.pages} pages but preview had ${r.previewPages}`);
     if (scenario.minPages && info.pages < scenario.minPages) problems.push(`only ${info.pages} pages, expected >= ${scenario.minPages}`);
@@ -114,11 +182,67 @@ for (const scenario of scenarios) {
         problems.push(`diagrams rendered/failed = ${d.rendered}/${d.failed}, expected ${scenario.expectDiagrams.rendered}/${scenario.expectDiagrams.failed}`);
       }
     }
+    // ---- Annotation expectations ----
+    const a = r.annotations;
+    if (scenario.annotationsFile || scenario.quotes || scenario.acrossBreak || scenario.docFile) {
+      if (!a) problems.push('no annotation results in the report');
+    }
+    if (a) {
+      if (a.missed && a.missed.length) problems.push(`could not select: ${a.missed.join(' | ')}`);
+      const want = scenario.expectNotes;
+      if (want) {
+        for (const key of Object.keys(want)) {
+          if (a.stats[key] !== want[key]) problems.push(`notes ${key} = ${a.stats[key]}, expected ${want[key]}`);
+        }
+      }
+      if (scenario.linesMustNotMove && a.linesMoved !== 0) problems.push(`${a.linesMoved} of ${a.lines} lines of text moved when annotations were painted`);
+      // The app's own safety net must agree that no mark pushed text off a page.
+      if (a.stats.shiftedPages && a.stats.shiftedPages.length) problems.push(`marks changed the layout of page ${a.stats.shiftedPages.join(', ')}`);
+      if (scenario.expectPainted === 'none' && a.paintedMarks !== 0) problems.push(`${a.paintedMarks} marks still show colour while hidden`);
+      if (scenario.expectPainted === 'some' && !(a.paintedMarks > 0)) problems.push('no mark shows any colour or line');
+      if (scenario.expectPersist) {
+        const got = a.persist || {};
+        for (const key of Object.keys(scenario.expectPersist)) {
+          if (got[key] !== scenario.expectPersist[key]) problems.push(`sidecar ${key} = ${got[key]}, expected ${scenario.expectPersist[key]}`);
+        }
+      }
+      if (scenario.expectAcrossBreak && !(a.acrossBreak && a.acrossBreak.id && a.acrossBreak.pagesWithMarks >= 2)) {
+        problems.push(`expected a highlight painted on two pages, got ${JSON.stringify(a.acrossBreak)}`);
+      }
+      const mdOut = fs.readFileSync(path.join(out, a.markdownFile), 'utf8');
+      for (const piece of scenario.mdText || []) {
+        if (!mdOut.includes(piece)) problems.push(`Markdown export is missing: ${piece}`);
+      }
+      if (scenario.expectMd) {
+        if (process.env.UPDATE_FIXTURES) fs.writeFileSync(scenario.expectMd, mdOut);
+        const expected = fs.existsSync(scenario.expectMd) ? fs.readFileSync(scenario.expectMd, 'utf8') : null;
+        if (expected === null) problems.push(`missing fixture ${path.basename(scenario.expectMd)} (run with UPDATE_FIXTURES=1 to create it)`);
+        else if (expected !== mdOut) problems.push(`Markdown export differs from ${path.basename(scenario.expectMd)} (diff it against ${a.markdownFile})`);
+      }
+      try {
+        const marginNotes = squeeze(pdfText(pdfPath, true));
+        const typed = scenario.marginText
+          || (scenario.marginHasNotes === undefined ? [] : JSON.parse(fs.readFileSync(scenario.annotationsFile, 'utf8')).annotations.map((n) => n.note).filter(Boolean));
+        for (const note of typed) {
+          const present = marginNotes.includes(squeeze(note));
+          if (scenario.marginHasNotes === false && present) problems.push(`hidden note still printed: ${note}`);
+          if (scenario.marginHasNotes !== false && !present) problems.push(`margin note not found in the PDF text: ${note}`);
+        }
+        if (scenario.samePdfTextAs) {
+          const other = path.join(out, `${scenario.samePdfTextAs}.pdf`);
+          if (pdfText(pdfPath) !== pdfText(other)) problems.push(`PDF text differs from ${scenario.samePdfTextAs}`);
+        }
+      } catch (e) { problems.push(`pdftotext failed: ${e.message}`); }
+    }
+    if (scenario.samePagesAs) {
+      const other = byName[scenario.samePagesAs];
+      if (other && info.pages !== other.pdfPages) problems.push(`${info.pages} pages, expected the same as ${scenario.samePagesAs} (${other.pdfPages})`);
+    }
     // First PDF page as PNG for visual review.
     try {
       execFileSync('pdftoppm', ['-png', '-r', '60', '-f', '1', '-l', '1', pdfPath, path.join(out, `${scenario.name}-pdf-p1`)]);
     } catch (e) { problems.push(`pdftoppm failed: ${e.message}`); }
-    rows.push({ scenario: scenario.name, pages: info.pages, preview: r.previewPages, ms: r.renderMs, diagrams: r.diagrams ? `${r.diagrams.rendered}/${r.diagrams.failed}` : '', size: `${info.width}x${info.height}`, ok: problems.length === 0 });
+    rows.push({ scenario: scenario.name, pages: info.pages, preview: r.previewPages, ms: r.renderMs, diagrams: r.diagrams ? `${r.diagrams.rendered}/${r.diagrams.failed}` : '', size: `${info.width}x${info.height}`, notes: r.annotations && r.annotations.stats ? `${r.annotations.stats.placed}/${r.annotations.stats.unplaced}` : '', ok: problems.length === 0 });
   }
   if (problems.length) {
     failures++;
