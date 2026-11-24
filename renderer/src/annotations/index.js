@@ -9,9 +9,10 @@
 // annotation up again, put the marks back. It is fast, it is the same code
 // after a re-render and after a single new highlight, and it cannot drift.
 
-import { createStore, sanitizeSidecar, newId, hashText } from './model.js';
+import { createStore, sanitizeSidecar, newId, hashText, MAX_NOTE } from './model.js';
 import { locate, locateBlock, occurrenceOf, blockOccurrenceOf, squeeze } from './match.js';
 import { annotatedMarkdown } from './export-md.js';
+import { buildOutline, MAX_DEPTH } from './outline.js';
 import {
   collectBlocks, blockText, describe, readable, isWordAligned,
   wrapRange, numberMark, unwrapAll, markBlock, unmarkBlocks,
@@ -25,6 +26,7 @@ const STORAGE_CACHE = 'planPrinter.annotations.v2';
 const TOOLS = new Set(['select', 'highlight', 'underline', 'strike', 'note']);
 const TEXT_KINDS = new Set(['highlight', 'underline', 'strike']);
 const SAVE_DELAY = 500; // ms after the last change
+const EXCERPT_MAX = 80; // characters of a block's source remembered by a note on the whole block
 // Label ids and colours are written into a stylesheet, so only plain ones are used.
 const CSS_ID = /^[a-z0-9_-]{1,40}$/i;
 const CSS_COLOR = /^#[0-9a-f]{3,8}$/i;
@@ -67,6 +69,15 @@ export function createAnnotations({ marked, api, pagesEl, getSource, getDocument
   let tool = 'select';
   let label = 'note';
   let hidden = false;
+  // The section whose notes the notes list is showing: the block number of
+  // its heading, or null for "all notes".
+  let section = null;
+  // Other places that hold typing which is not saved yet (the section note
+  // box). commitEdits() asks each of them to save.
+  const flushers = new Set();
+  // Goes up by one every time a document's notes are loaded. Something typed
+  // for one document must never be saved into the next; this tells them apart.
+  let epoch = 0;
 
   // Rebuilt by every paint():
   let placed = table(); // id -> { block, start, end }, or { block } for a block note
@@ -76,6 +87,7 @@ export function createAnnotations({ marked, api, pagesEl, getSource, getDocument
   let numbers = table(); // id -> the number on its margin card
   let pageOf = table(); // id -> 1-based page number
   let shown = table(); // id -> how a block note's block reads on the page (for the notes list)
+  let headings = []; // every heading on the pages: { block, depth, title, page } (for the contents list)
   let cardCount = 0;
   let overflowPages = []; // pages whose notes had to be shortened to fit the margin
   let shiftedPages = []; // pages where a mark changed the layout (should stay empty)
@@ -125,15 +137,19 @@ export function createAnnotations({ marked, api, pagesEl, getSource, getDocument
     const last = pieces[pieces.length - 1];
     const placedPieces = pieces.filter((a) => placed[a.id]);
     const pages = placedPieces.map((a) => pageOf[a.id]).filter(Boolean);
+    const blocks = placedPieces.map((a) => placed[a.id].block);
     return {
       id: last.id,
       kind: last.kind,
       label: last.label,
       note: last.note,
-      exact: pieces.map((a) => (a.kind === 'block' && shown[a.id]) || a.target.exact).join(' … '),
+      // A block note and a section note show their block the way it reads on the page.
+      exact: pieces.map((a) => shown[a.id] || a.target.exact).join(' … '),
       status: placedPieces.length ? 'placed' : 'unplaced',
       number: numbers[last.id] ?? null,
       page: pages.length ? Math.min(...pages) : null,
+      // The block it starts in (which section it is in follows from this).
+      block: blocks.length ? Math.min(...blocks) : null,
     };
   }
 
@@ -167,6 +183,7 @@ export function createAnnotations({ marked, api, pagesEl, getSource, getDocument
     numbers = table();
     pageOf = table();
     shown = table();
+    headings = [];
     cardCount = 0;
     overflowPages = [];
     shiftedPages = [];
@@ -208,20 +225,44 @@ export function createAnnotations({ marked, api, pagesEl, getSource, getDocument
     const anchors = table();
     const lastMark = table();
 
+    // The document's headings, for the contents list. Only real headings are
+    // found this way: a "## line" inside a code block is part of that code
+    // block, not a block of its own.
+    source.blocks.forEach((b, n) => {
+      if (b.type !== 'heading' || !groups.has(n)) return;
+      const el = groups.get(n)[0];
+      const level = /^H([1-6])$/.exec(el.tagName);
+      if (!level) return;
+      const page = el.closest('.pagedjs_page');
+      headings.push({
+        block: n,
+        depth: Number(level[1]),
+        title: el.textContent, // a note's number is drawn by CSS, so it is not part of this
+        page: page ? pageEls.indexOf(page) + 1 : null,
+      });
+    });
+
     const all = draft ? [...store.list(), draft] : store.list();
     for (const a of all) {
       const target = known[a.id] || a.target;
-      if (a.kind === 'block') {
-        const n = locateBlock(target, sources);
+      if (a.kind === 'block' || a.kind === 'section') {
+        // A section note remembers its heading. When the excerpt is the whole
+        // heading (it was not cut short), only that exact heading will do.
+        const whole = a.kind === 'section' && String(target.exact ?? '').length < EXCERPT_MAX;
+        const n = locateBlock(target, sources, { whole });
         if (n === null || n === undefined || !groups.has(n)) continue;
+        // A section note belongs to a heading. If the block that now begins
+        // with its words is not one, the heading has gone: unplaced.
+        if (a.kind === 'section' && source.blocks[n].type !== 'heading') continue;
         placed[a.id] = { block: n };
         const b = source.blocks[n];
-        const excerpt = source.src.slice(b.start, b.end).replace(/\s+/g, ' ').trim().slice(0, 80);
+        const excerpt = source.src.slice(b.start, b.end).replace(/\s+/g, ' ').trim().slice(0, EXCERPT_MAX);
         const now = { block: n, exact: excerpt };
-        const copies = blockOccurrenceOf(now, sources, n);
+        const copies = blockOccurrenceOf(now, sources, n, { whole });
         if (copies) now.occurrence = copies;
         fresh[a.id] = now;
-        markBlock(groups.get(n), a);
+        // A section note shows nothing on the page: it lives in the notes list.
+        if (a.kind === 'block') markBlock(groups.get(n), a);
         anchors[a.id] = groups.get(n)[0];
         // The saved excerpt is Markdown source ("| Setting | Default |"); the
         // notes list should show the block the way it reads on the page.
@@ -256,12 +297,16 @@ export function createAnnotations({ marked, api, pagesEl, getSource, getDocument
       setStatus(`A highlight pushed text past the edge of page ${shiftedPages.join(', ')}. Undo the last mark, or select slightly different words.`, true);
     }
 
-    // Document order: by block, then by position in the block.
+    // Document order: by block, then by position in the block. A section
+    // note comes before everything else at its heading.
+    const startOf = (a) => (a.kind === 'section' ? -2 : (placed[a.id].start ?? -1));
     const ordered = all
       .filter((a) => placed[a.id])
-      .sort((a, b) => (placed[a.id].block - placed[b.id].block)
-        || ((placed[a.id].start ?? -1) - (placed[b.id].start ?? -1)));
+      .sort((a, b) => (placed[a.id].block - placed[b.id].block) || (startOf(a) - startOf(b)));
     ordered.forEach((a, i) => { rank[a.id] = i; });
+
+    // The section that is open in the notes list must still be a listed heading.
+    if (section !== null && !headings.some((h) => h.block === section && h.depth <= MAX_DEPTH)) section = null;
 
     // Margin cards (and the little numbers that pair a mark with its card)
     // exist only in the Margin notes layout.
@@ -271,6 +316,7 @@ export function createAnnotations({ marked, api, pagesEl, getSource, getDocument
     for (const a of ordered) {
       const page = anchors[a.id].closest('.pagedjs_page');
       if (page) pageOf[a.id] = pageEls.indexOf(page) + 1;
+      if (a.kind === 'section') continue; // never a margin card
       if (!hasMargin) continue;
       if (!a.note && a.id !== editingId) continue; // nothing to show in the margin
       n += 1;
@@ -379,7 +425,7 @@ export function createAnnotations({ marked, api, pagesEl, getSource, getDocument
   // and just before the document is replaced, when a save "in half a second"
   // would be too late or would land on the wrong document.
   function flush() {
-    commitCardEdits(pagesEl);
+    commitEdits();
     const job = prepareSave();
     if (!job) return;
     let result = null;
@@ -421,6 +467,8 @@ export function createAnnotations({ marked, api, pagesEl, getSource, getDocument
     warnedNoFile = false;
     editingId = null;
     draft = null;
+    section = null; // a different document: back to "all notes"
+    epoch += 1;
     saveTrouble = false;
     skipNextPaint = false;
     known = table();
@@ -480,7 +528,7 @@ export function createAnnotations({ marked, api, pagesEl, getSource, getDocument
     const block = source && source.blocks[blockIndex];
     if (!canEdit() || !block) return null;
     commitCardEdits(pagesEl); // finish any other note first
-    const excerpt = source.src.slice(block.start, block.end).replace(/\s+/g, ' ').trim().slice(0, 80);
+    const excerpt = source.src.slice(block.start, block.end).replace(/\s+/g, ' ').trim().slice(0, EXCERPT_MAX);
     const record = { id: newId(), kind: 'block', label: labelId || label, note: '', target: { block: blockIndex, exact: excerpt } };
     // It starts as a draft: the card opens for typing, and only once there
     // are words does it become a real annotation (ONE undo step). Clicking
@@ -593,6 +641,11 @@ export function createAnnotations({ marked, api, pagesEl, getSource, getDocument
     for (const a of pieces) {
       const safe = CSS.escape(a.id);
       found.push(...pagesEl.querySelectorAll(`mark[data-anno="${safe}"], [data-anno-block="${safe}"], .anno-card[data-anno="${safe}"]`));
+      // A section note has nothing of its own on the page: go to its heading.
+      if (a.kind === 'section' && placed[a.id]) {
+        const heading = pagesEl.querySelector(`[data-block="${placed[a.id].block}"]`);
+        if (heading) found.push(heading);
+      }
     }
     if (found.length === 0) return;
     found[0].scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -618,6 +671,84 @@ export function createAnnotations({ marked, api, pagesEl, getSource, getDocument
       resolved: placed,
       texts,
     });
+  }
+
+  // The contents list: every "#", "##" and "###" heading with its page and
+  // the number of notes under it. See outline.js for the shape.
+  function outline() {
+    // Where each note starts. A selection across several blocks is one note
+    // to the user (see "Groups" above), so it is counted once, where it begins.
+    const firstBlock = new Map();
+    const summed = []; // the headings that have a section note
+    for (const a of store.list()) {
+      const at = placed[a.id];
+      if (!at) continue; // unplaced: it is not on any page, so in no section
+      if (a.kind === 'section') {
+        summed.push(at.block); // marked on its row, not counted as one of the notes
+        continue;
+      }
+      const key = a.group || a.id;
+      firstBlock.set(key, Math.min(firstBlock.get(key) ?? Infinity, at.block));
+    }
+    return buildOutline(headings, Array.from(firstBlock.values()), { sectionNotes: summed });
+  }
+
+  // ---- Section notes ----------------------------------------------------------
+  // Your own note on a whole section. It is stored like a note on a block (the
+  // block being the section's heading) and shows in the notes list, the
+  // contents list and the Markdown export, never on the page itself.
+
+  function sectionRecord(block) {
+    return store.list().find((a) => a.kind === 'section' && placed[a.id] && placed[a.id].block === block) || null;
+  }
+
+  // The note on the section whose heading is block `block`, as an item (the
+  // same shape items() returns), or null when it has none.
+  function sectionNote(block) {
+    const record = sectionRecord(block);
+    return record ? toItem([record]) : null;
+  }
+
+  // Write, change or (with empty text) remove that note. ONE undo step.
+  // Returns false when it cannot be done right now (the pages are being
+  // rebuilt, or there is no such heading); the caller then keeps the text and
+  // tries again.
+  function setSectionNote(block, text) {
+    const source = getSource();
+    const heading = source && source.blocks[block];
+    if (!canEdit() || !heading || heading.type !== 'heading') return false;
+    const note = String(text ?? '').trim().slice(0, MAX_NOTE);
+    const existing = sectionRecord(block);
+    if (existing) {
+      if (!note) store.remove(existing.id);
+      else store.update(existing.id, { note }); // does nothing when the text is the same
+      return true;
+    }
+    if (!note) return true; // nothing was there and nothing was typed
+    const excerpt = source.src.slice(heading.start, heading.end).replace(/\s+/g, ' ').trim().slice(0, EXCERPT_MAX);
+    store.add({ id: newId(), kind: 'section', label: 'note', note, target: { block, exact: excerpt } });
+    return true;
+  }
+
+  // Show one section's notes in the notes list (null = all notes again).
+  // Anything still being typed is saved first: it belongs to the section
+  // that is open now, not to the one about to be shown.
+  function setSection(block) {
+    const listed = (h) => h.block === block && h.depth <= MAX_DEPTH;
+    const next = Number.isInteger(block) && headings.some(listed) ? block : null;
+    if (next === section) return;
+    commitEdits();
+    section = next;
+    emit();
+  }
+
+  // Finish every edit that is in progress: a margin card being typed into,
+  // and whatever the registered flushers hold.
+  function commitEdits() {
+    commitCardEdits(pagesEl);
+    for (const save of flushers) {
+      try { save(); } catch (err) { console.error(err); }
+    }
   }
 
   function stats() {
@@ -651,14 +782,24 @@ export function createAnnotations({ marked, api, pagesEl, getSource, getDocument
     remove,
     // A note that is mid-edit is finished first, so the step being undone is
     // the one the user sees as the latest.
-    undo() { if (canEdit()) { commitCardEdits(pagesEl); store.undo(); } },
-    redo() { if (canEdit()) { commitCardEdits(pagesEl); store.redo(); } },
+    undo() { if (canEdit()) { commitEdits(); store.undo(); } },
+    redo() { if (canEdit()) { commitEdits(); store.redo(); } },
     canUndo: () => store.canUndo(),
     canRedo: () => store.canRedo(),
     editNote,
     focus,
     onChange(cb) { listeners.add(cb); return () => listeners.delete(cb); },
     stats,
+    outline,
+    get section() { return section; },
+    get epoch() { return epoch; },
+    setSection,
+    sectionNote,
+    setSectionNote,
+    // `save` is called whenever edits in progress must be finished (before an
+    // export, an undo, a re-render, closing the window). Returns a function
+    // that takes it off the list again.
+    onCommitEdits(save) { flushers.add(save); return () => flushers.delete(save); },
     // For app.js:
     get notice() { return notice; },
     get readOnly() { return readOnly; },
@@ -670,7 +811,7 @@ export function createAnnotations({ marked, api, pagesEl, getSource, getDocument
     toSidecar,
     saveNow() { dirty = true; return saveNow(); },
     flush,
-    commitEdits: () => commitCardEdits(pagesEl),
+    commitEdits,
     count: () => store.list().length,
   };
 }

@@ -4,9 +4,9 @@ import assert from 'node:assert/strict';
 import {
   annotatedMarkdown, findInSource, occurrence, rendersTheSame, codeLineOf,
 } from '../../renderer/src/annotations/export-md.js';
-import { DEFAULT_LABELS } from '../../renderer/src/annotations/model.js';
+import { DEFAULT_LABELS, sanitizeSidecar } from '../../renderer/src/annotations/model.js';
 import {
-  FIXTURES, makeMarked, readFixture, openDoc, annotate, blockNote,
+  FIXTURES, makeMarked, readFixture, openDoc, annotate, blockNote, sectionNote, headingBlock,
   exportDoc, withoutLegend, stripMarkup,
 } from './helpers.js';
 
@@ -1034,4 +1034,515 @@ test('a selection across two blocks counts as one annotation in the legend', () 
   // Both parts are still marked in the text.
   assert.ok(out.includes('{==First paragraph==}'));
   assert.ok(out.includes('{==Second paragraph==}{>>[question] Both?<<}'));
+});
+
+// ---- Section notes --------------------------------------------------------------
+
+// A section note is the reviewer's own note on a whole section. In the export
+// it is a comment on a line of its own just below the section's heading:
+//   ## Risks
+//
+//   {>>[section note] Mostly fine.<<}
+
+const SECTIONS = [
+  '# Rate limiting',
+  '',
+  'Intro paragraph.',
+  '',
+  '## Risks',
+  '',
+  'Clock skew is the main risk.',
+  '',
+  '### Clock skew',
+  '',
+  'Use the Redis clock.',
+  '',
+  '## Open questions',
+  '',
+  'None yet.',
+  '',
+].join('\n');
+
+// SECTIONS with `comment` on its own line under the heading `line`.
+const withCommentUnder = (line, comment) => SECTIONS.replace(`${line}\n\n`,
+  `${line}\n\n${comment}\n\n`);
+
+// What the legend says after "> N section note(s): ".
+const SECTION_LEGEND = '`{>>[section note] comment<<}` on its own line under a heading is the '
+  + 'reviewer\'s own summing-up of that whole section, subsections included.';
+const UNPLACED_INTRO = '> **Unplaced reviewer notes.** The text these notes referred to is '
+  + 'no longer in the document.';
+
+// The legend at the top of an export, as a list of lines.
+const legendLines = (exported) => exported.slice(0, exported.indexOf('\n\n')).split('\n');
+
+test('a section note is written on its own line just below its heading', () => {
+  const doc = openDoc(marked, SECTIONS);
+  const exported = exportDoc(doc, [
+    sectionNote(doc, headingBlock(doc, '## Risks'), 'Mostly fine. Check the clock part.'),
+  ]);
+  const out = withoutLegend(exported);
+  assert.equal(out, withCommentUnder('## Risks',
+    '{>>[section note] Mostly fine. Check the clock part.<<}'));
+  // Only insertions: with the comment taken out again the file is as it was.
+  assert.equal(stripMarkup(exported), SECTIONS);
+
+  // The heading is still a heading, and the comment is a paragraph of its
+  // own straight after it. Nothing else in the document changed kind.
+  assert.deepEqual(blockTypes(SECTIONS), [
+    'heading', 'paragraph', 'heading', 'paragraph', 'heading', 'paragraph', 'heading', 'paragraph',
+  ]);
+  assert.deepEqual(blockTypes(out), [
+    'heading', 'paragraph', 'heading', 'paragraph', 'paragraph', 'heading', 'paragraph',
+    'heading', 'paragraph',
+  ]);
+  const tokens = marked.lexer(out).filter((t) => t.type !== 'space');
+  assert.equal(tokens[2].text, 'Risks');
+  assert.equal(tokens[2].depth, 2);
+  assert.equal(tokens[3].raw.trim(), '{>>[section note] Mostly fine. Check the clock part.<<}');
+});
+
+test('a section comment has no colour label and no "On ..." lead', () => {
+  // The app always stores the label "note". A hand-edited file could say
+  // anything; the tag still reads "section note" and nothing else.
+  for (const label of ['note', 'question', 'important', 'custom', '']) {
+    const out = body(SECTIONS, (doc) => ({
+      ...sectionNote(doc, headingBlock(doc, '## Risks'), 'In short: fine.'), label,
+    }));
+    assert.equal(out, withCommentUnder('## Risks', '{>>[section note] In short: fine.<<}'),
+      `label "${label}"`);
+  }
+  // With no text at all the tag stands alone, as it does for a block note.
+  const bare = body(SECTIONS, (doc) => sectionNote(doc, headingBlock(doc, '## Risks'), ''));
+  assert.equal(bare, withCommentUnder('## Risks', '{>>[section note]<<}'));
+});
+
+test('a section note is never written inside its heading', () => {
+  const doc = openDoc(marked, SECTIONS);
+  const risks = headingBlock(doc, '## Risks');
+  // A highlight on the heading's one word is written inside the heading.
+  const highlight = annotate(doc, 'Risks',
+    { block: risks, label: 'question', note: 'In short: fine.' });
+  assert.ok(exportDoc(doc, [highlight])
+    .includes('## {==Risks==}{>>[question] In short: fine.<<}\n'));
+
+  // A section note handed the very same words and place (the app never does
+  // this, a damaged file might) still leaves the heading as it was written
+  // and goes on the line below.
+  const section = { ...highlight, id: 'section-with-a-place', kind: 'section' };
+  const { start, end } = highlight.target;
+  const out = annotatedMarkdown(marked, doc.source, [section], {
+    labels: DEFAULT_LABELS, resolved: { [section.id]: { block: risks, start, end } }, texts: doc.texts,
+  });
+  assert.equal(withoutLegend(out),
+    withCommentUnder('## Risks', '{>>[section note] In short: fine.<<}'));
+});
+
+test('section notes work on every level of heading, whatever order they were made in', () => {
+  const out = body(SECTIONS, (doc) => [
+    sectionNote(doc, headingBlock(doc, '### Clock skew'), 'on a subsection'),
+    sectionNote(doc, headingBlock(doc, '# Rate limiting'), 'on the title'),
+    sectionNote(doc, headingBlock(doc, '## Open questions'), 'on the last section'),
+    sectionNote(doc, headingBlock(doc, '## Risks'), 'on a main section'),
+  ]);
+  assert.equal(out, [
+    '# Rate limiting',
+    '',
+    '{>>[section note] on the title<<}',
+    '',
+    'Intro paragraph.',
+    '',
+    '## Risks',
+    '',
+    '{>>[section note] on a main section<<}',
+    '',
+    'Clock skew is the main risk.',
+    '',
+    '### Clock skew',
+    '',
+    '{>>[section note] on a subsection<<}',
+    '',
+    'Use the Redis clock.',
+    '',
+    '## Open questions',
+    '',
+    '{>>[section note] on the last section<<}',
+    '',
+    'None yet.',
+    '',
+  ].join('\n'));
+  assert.equal(stripMarkup(`legend\n\n${out}`), SECTIONS);
+});
+
+test('a section note keeps clear of text on the line right after the heading', () => {
+  const comment = '{>>[section note] In short: fine.<<}';
+  const under = (md) => body(md, (doc) => sectionNote(doc, 0, 'In short: fine.'));
+
+  // No blank line after the heading: one is added after the comment, or the
+  // paragraph would be read as the rest of the comment's line.
+  const tight = under('## Risks\nClock skew is the main risk.\n');
+  assert.equal(tight, `## Risks\n\n${comment}\n\nClock skew is the main risk.\n`);
+  assert.deepEqual(blockTypes(tight), ['heading', 'paragraph', 'paragraph']);
+
+  // A heading written with a line of dashes under it: the comment goes
+  // below the dashes, never between the words and the dashes.
+  const underlined = under('Risks\n-----\nClock skew is the main risk.\n');
+  assert.equal(underlined, `Risks\n-----\n\n${comment}\n\nClock skew is the main risk.\n`);
+  assert.deepEqual(blockTypes(underlined), ['heading', 'paragraph', 'paragraph']);
+
+  // A heading that is the last thing in a file with no final newline.
+  assert.equal(under('## Risks'), `## Risks\n\n${comment}`);
+});
+
+test('a section note is flattened to one line', () => {
+  const out = body(SECTIONS, (doc) => sectionNote(doc, headingBlock(doc, '## Risks'),
+    '  Mostly fine.\n\nCheck the\tclock part.\n- and the list  \n'));
+  assert.equal(out, withCommentUnder('## Risks',
+    '{>>[section note] Mostly fine. Check the clock part. - and the list<<}'));
+  assert.equal(stripMarkup(`legend\n\n${out}`), SECTIONS);
+});
+
+test('"<<}" inside a section note cannot end the comment early', () => {
+  const out = body(SECTIONS, (doc) => sectionNote(doc, headingBlock(doc, '## Risks'),
+    'ends <<} early, twice <<}'));
+  assert.equal(out, withCommentUnder('## Risks',
+    '{>>[section note] ends < <} early, twice < <}<<}'));
+  // One "<<}" is left, the real end, so removing the comment removes all of it.
+  assert.equal(out.split('<<}').length - 1, 1);
+  assert.equal(stripMarkup(`legend\n\n${out}`), SECTIONS);
+});
+
+test('the legend counts section notes on a line of their own, not under a label', () => {
+  const doc = openDoc(marked, SECTIONS);
+  const risks = headingBlock(doc, '## Risks');
+  const open = headingBlock(doc, '## Open questions');
+  const question = annotate(doc, 'main risk', { label: 'question', note: 'How big?' });
+  const keep = annotate(doc, 'None yet', { label: 'keep' });
+
+  // The legend of the same two annotations without any section note.
+  const usual = legendLines(exportDoc(doc, [question, keep]));
+  assert.equal(usual.length, 3);
+  assert.equal(usual[2], '> 2 annotations: 1 question, 1 keep.');
+
+  const out = exportDoc(doc, [
+    question,
+    sectionNote(doc, risks, 'Mostly fine.'),
+    keep,
+    sectionNote(doc, open, 'Nothing to add.'),
+  ]);
+  // The same three lines (the section notes carry the label "note", and no
+  // "2 note" has appeared), then one more line for the section notes.
+  assert.deepEqual(legendLines(out), [...usual, `> 2 section notes: ${SECTION_LEGEND}`]);
+  // Still one blockquote, with the document after a blank line.
+  assert.equal(marked.lexer(out)[0].type, 'blockquote');
+  assert.ok(out.startsWith(`${legendLines(out).join('\n')}\n\n# Rate limiting\n`));
+
+  // One of them: "1 section note".
+  const one = exportDoc(doc, [keep, sectionNote(doc, risks, 'Mostly fine.')]);
+  assert.deepEqual(legendLines(one).slice(2),
+    ['> 1 annotation: 1 keep.', `> 1 section note: ${SECTION_LEGEND}`]);
+
+  // A label on a section note (a hand-edited file) is not counted either.
+  const labelled = exportDoc(doc, [keep, { ...sectionNote(doc, risks, 'x'), label: 'question' }]);
+  assert.deepEqual(legendLines(labelled), legendLines(one));
+
+  // A section note with no text still gets its comment in the document (see
+  // the test above), so the legend counts it and explains the notation.
+  const empty = exportDoc(doc, [
+    keep, sectionNote(doc, risks, ''), sectionNote(doc, open, 'Nothing to add.'),
+  ]);
+  assert.equal(legendLines(empty)[3], `> 2 section notes: ${SECTION_LEGEND}`);
+});
+
+test('a document with only section notes has no "0 annotations" line in the legend', () => {
+  const doc = openDoc(marked, SECTIONS);
+  const risks = headingBlock(doc, '## Risks');
+  const check = (out) => {
+    const lines = legendLines(out);
+    assert.equal(lines.length, 3);
+    assert.ok(lines[0].startsWith('> **Reviewer annotations (CriticMarkup).** '));
+    assert.ok(lines[1].startsWith('> Labels: note = general remark; '));
+    assert.equal(lines[2], `> 1 section note: ${SECTION_LEGEND}`);
+    // No count of annotations anywhere, in any wording.
+    assert.equal(/\d+ annotations?\b/.test(out), false);
+    assert.equal(marked.lexer(out)[0].type, 'blockquote');
+  };
+  check(exportDoc(doc, [sectionNote(doc, risks, 'Mostly fine.')]));
+  // The same when that one section note could not be placed.
+  const lost = sectionNote(doc, risks, 'Mostly fine.');
+  check(exportDoc(doc, [lost], { unplaced: [lost.id] }));
+});
+
+test('without section notes the export does not mention them', () => {
+  // Every other kind of note, placed and unplaced.
+  const doc = openDoc(marked, SECTIONS);
+  const lost = blockNote(doc, 1, { label: 'question', note: 'Gone' });
+  const out = exportDoc(doc, [
+    annotate(doc, 'main risk', { label: 'question', note: 'How big?' }),
+    annotate(doc, 'Redis clock', { kind: 'underline', label: 'keep' }),
+    annotate(doc, 'None yet', { kind: 'strike', label: 'change', note: 'Add one' }),
+    blockNote(doc, headingBlock(doc, '## Risks'), { label: 'important', note: 'Read this' }),
+    lost,
+  ], { unplaced: [lost.id] });
+  assert.equal(legendLines(out).length, 3);
+  assert.equal(legendLines(out)[2], '> 5 annotations: 2 question, 1 change, 1 keep, 1 important.');
+  assert.equal(out.includes('section note'), false);
+  assert.equal(out.includes('On the section'), false);
+});
+
+test('sample-plan.md: the saved sample notes still export to sample.annotated.md', () => {
+  // test/fixtures/sample.annotated.md is what the app exports for the sample
+  // plan with the notes in sample.annotations.json (test/run.js checks that
+  // in the real app). Here the same notes go through the export on their
+  // own: the result must be that file, byte for byte.
+  const doc = openDoc(marked, readFixture('samples/sample-plan.md'));
+  const file = sanitizeSidecar(JSON.parse(readFixture('test/fixtures/sample.annotations.json')));
+  assert.ok(file.annotations.length > 0);
+  const out = exportDoc(doc, file.annotations, { labels: file.labels });
+  assert.equal(out, readFixture('test/fixtures/sample.annotated.md'));
+});
+
+test('a highlight in the heading and a section note on it both survive', () => {
+  const expected = withCommentUnder('## Risks', '{>>[section note] In short: fine.<<}')
+    .replace('## Risks\n', '## {==Risks==}{>>[question] All of them?<<}\n');
+  const make = (doc) => {
+    const risks = headingBlock(doc, '## Risks');
+    return [
+      annotate(doc, 'Risks', { block: risks, label: 'question', note: 'All of them?' }),
+      sectionNote(doc, risks, 'In short: fine.'),
+    ];
+  };
+  // The highlight is written inside the heading and the section comment
+  // still follows the heading, whichever of the two was made first.
+  assert.equal(body(SECTIONS, make), expected);
+  assert.equal(body(SECTIONS, (doc) => make(doc).reverse()), expected);
+  assert.equal(stripMarkup(`legend\n\n${expected}`), SECTIONS);
+  // Still a "##" heading followed by a paragraph that is only the comment.
+  const tokens = marked.lexer(expected).filter((t) => t.type !== 'space');
+  assert.equal(tokens[2].type, 'heading');
+  assert.equal(tokens[2].depth, 2);
+  assert.equal(tokens[3].raw.trim(), '{>>[section note] In short: fine.<<}');
+
+  // A struck-out word in the middle of a heading, with the section note made first.
+  const struck = body(SECTIONS, (doc) => {
+    const open = headingBlock(doc, '## Open questions');
+    return [
+      sectionNote(doc, open, 'Nothing to add.'),
+      annotate(doc, 'Open', { block: open, kind: 'strike', label: 'change', note: 'Drop this' }),
+    ];
+  });
+  assert.equal(struck, withCommentUnder('## Open questions', '{>>[section note] Nothing to add.<<}')
+    .replace('## Open questions\n', '## {--Open--}{>>[change] Drop this<<} questions\n'));
+});
+
+test('a block note and a section note on the same heading both stand below it', () => {
+  const doc = openDoc(marked, SECTIONS);
+  const risks = headingBlock(doc, '## Risks');
+  const exported = exportDoc(doc, [
+    blockNote(doc, risks, { label: 'keep', note: 'Good heading' }),
+    sectionNote(doc, risks, 'In short: fine.'),
+  ]);
+  const out = withoutLegend(exported);
+  // Everything between the heading and its first paragraph: the two comments,
+  // each on a line of its own. (Which of the two comes first is not checked.)
+  const between = out.slice(out.indexOf('## Risks\n') + '## Risks\n'.length,
+    out.indexOf('Clock skew is'));
+  assert.deepEqual(between.split('\n').filter(Boolean).sort(), [
+    '{>>[keep] Good heading<<}',
+    '{>>[section note] In short: fine.<<}',
+  ]);
+  assert.equal(stripMarkup(exported), SECTIONS);
+});
+
+test('an unplaced section note is listed at the end with the name of its section', () => {
+  const doc = openDoc(marked, SECTIONS);
+  const lost = sectionNote(doc, headingBlock(doc, '## Risks'),
+    'Mostly fine.\nCheck the clock part.');
+  const exported = exportDoc(doc, [lost], { unplaced: [lost.id] });
+  // The document itself is untouched; the note follows the "Unplaced" intro.
+  assert.equal(withoutLegend(exported), `${SECTIONS}\n${UNPLACED_INTRO}\n\n`
+    + '{>>[section note] On the section "Risks": Mostly fine. Check the clock part.<<}\n');
+  assert.equal(stripMarkup(exported), SECTIONS);
+  // It is still counted in the legend.
+  assert.equal(legendLines(exported)[2], `> 1 section note: ${SECTION_LEGEND}`);
+});
+
+test('the lead of an unplaced section note is its heading without the #s', () => {
+  const doc = openDoc(marked, SECTIONS);
+  // A section note whose heading has gone. `exact` is the heading as it was
+  // written when the note was made.
+  const gone = (exact, note) => ({
+    ...sectionNote(doc, headingBlock(doc, '## Risks'), note), target: { block: 99, exact },
+  });
+  const lost = [
+    gone('# Rate limiting', 'on the title'),
+    gone('### Clock skew', 'on a subsection'),
+    gone('## C# and F# notes', 'only the #s in front come off'),
+    gone('## The "fast" path', 'double quotes are replaced'),
+    gone('## Risks', ''), // no text: the lead alone
+    gone('', 'nothing remembered'), // no heading: the text alone
+  ];
+  const out = withoutLegend(exportDoc(doc, lost, { unplaced: lost.map((a) => a.id) }));
+  assert.equal(out, [
+    SECTIONS,
+    UNPLACED_INTRO,
+    '',
+    '{>>[section note] On the section "Rate limiting": on the title<<}',
+    '',
+    '{>>[section note] On the section "Clock skew": on a subsection<<}',
+    '',
+    '{>>[section note] On the section "C# and F# notes": only the #s in front come off<<}',
+    '',
+    '{>>[section note] On the section "The \'fast\' path": double quotes are replaced<<}',
+    '',
+    '{>>[section note] On the section "Risks"<<}',
+    '',
+    '{>>[section note] nothing remembered<<}',
+    '',
+  ].join('\n'));
+});
+
+test('unplaced section notes are listed with the other unplaced notes, in the order made', () => {
+  const doc = openDoc(marked, SECTIONS);
+  const lostText = annotate(doc, 'main risk', { label: 'question', note: 'Gone?' });
+  const lostSection = sectionNote(doc, headingBlock(doc, '## Risks'), 'Mostly fine.');
+  const placed = sectionNote(doc, headingBlock(doc, '## Open questions'), 'Nothing to add.');
+  const lostBlock = blockNote(doc, 1, { label: 'keep', note: 'Good intro' });
+  const out = withoutLegend(exportDoc(doc, [lostText, lostSection, placed, lostBlock],
+    { unplaced: [lostText.id, lostSection.id, lostBlock.id] }));
+  assert.equal(out, [
+    withCommentUnder('## Open questions', '{>>[section note] Nothing to add.<<}'),
+    UNPLACED_INTRO,
+    '',
+    '{>>[question] On "main risk": Gone?<<}',
+    '',
+    '{>>[section note] On the section "Risks": Mostly fine.<<}',
+    '',
+    '{>>[keep] On "Intro paragraph.": Good intro<<}',
+    '',
+  ].join('\n'));
+});
+
+test('a section note goes under the heading it was found at, not the saved block', () => {
+  const doc = openDoc(marked, SECTIONS);
+  const a = sectionNote(doc, headingBlock(doc, '## Risks'), 'Moved with its heading.');
+  // The saved block number is out of date (say the document was edited);
+  // the app found the heading again further down.
+  const out = annotatedMarkdown(marked, doc.source, [a], {
+    labels: DEFAULT_LABELS,
+    resolved: { [a.id]: { block: headingBlock(doc, '## Open questions') } },
+    texts: doc.texts,
+  });
+  assert.equal(withoutLegend(out),
+    withCommentUnder('## Open questions', '{>>[section note] Moved with its heading.<<}'));
+  // With no position at all it counts as unplaced.
+  const none = annotatedMarkdown(marked, doc.source, [a], { labels: DEFAULT_LABELS });
+  assert.ok(none.endsWith(`\n${UNPLACED_INTRO}\n\n`
+    + '{>>[section note] On the section "Risks": Moved with its heading.<<}\n'));
+});
+
+test('when block positions cannot be trusted a section note still goes below its heading', () => {
+  const doc = openDoc(marked, SECTIONS);
+  doc.source = { ...doc.source, exact: false };
+  const out = withoutLegend(exportDoc(doc, [
+    sectionNote(doc, headingBlock(doc, '## Risks'), 'In short: fine.'),
+  ]));
+  assert.equal(out, withCommentUnder('## Risks', '{>>[section note] In short: fine.<<}'));
+});
+
+// A section note on every heading of a document, with texts from NOTES (the
+// awkward ones included: a pipe, a stray backtick, "<<}", an open tag...).
+function sectionNotesOnEveryHeading(doc) {
+  const made = [];
+  doc.source.blocks.forEach((b, block) => {
+    if (b.type !== 'heading') return;
+    made.push(sectionNote(doc, block, NOTES[(made.length + 2) % NOTES.length]));
+  });
+  return made;
+}
+
+// Section notes on every heading, made before, between and after random
+// other annotations. Returns the mixed list and the ids left unplaced.
+function withSectionNotes(doc, seed) {
+  const { all, unplaced } = randomAnnotations(doc, seed);
+  const sections = sectionNotesOnEveryHeading(doc);
+  const mixed = [...all];
+  sections.forEach((s, i) => mixed.splice((i * 7 + seed) % (mixed.length + 1), 0, s));
+  return { mixed, unplaced, sections };
+}
+
+// How many section comments an export holds (the legend names one as an
+// example, so it is left out).
+const sectionComments = (exported) => (withoutLegend(exported)
+  .match(/\{>>\[section note\]/g) || []).length;
+
+for (const file of FIXTURES) {
+  test(`${file}: a section note on every heading changes nothing else`, () => {
+    const md = readFixture(file);
+    const doc = openDoc(marked, md);
+    const original = marked.parse(md);
+    for (let seed = 1; seed <= 10; seed++) {
+      const { mixed, unplaced, sections } = withSectionNotes(doc, seed);
+      assert.ok(sections.length > 0, 'the fixture has headings');
+      const out = exportDoc(doc, mixed, { unplaced });
+      assert.equal(stripMarkup(out), md, `seed ${seed}`);
+      assert.equal(sectionComments(out), sections.length, `seed ${seed}`);
+      const placed = withoutLegend(exportDoc(doc, mixed));
+      assert.equal(htmlWithoutMarkup(placed), original, `seed ${seed}`);
+    }
+  });
+}
+
+test('an awkward document survives a section note on every heading', () => {
+  const doc = openDoc(marked, AWKWARD);
+  const original = marked.parse(AWKWARD);
+  // As in the test above for this document: compare without counting how
+  // many newlines sit between two lines.
+  const lines = (text) => text.replace(/\n+/g, '\n');
+  for (let seed = 1; seed <= 30; seed++) {
+    const { mixed, unplaced, sections } = withSectionNotes(doc, seed);
+    // "Setext title" with its line of "=" and the "# ATX heading ... #".
+    assert.equal(sections.length, 2);
+    const out = exportDoc(doc, mixed, { unplaced });
+    assert.equal(lines(stripMarkup(out)), lines(AWKWARD), `seed ${seed}`);
+    assert.equal(sectionComments(out), 2, `seed ${seed}`);
+    const placed = withoutLegend(exportDoc(doc, mixed));
+    assert.equal(htmlWithoutMarkup(placed), original, `seed ${seed}`);
+  }
+});
+
+// The legend promises the section comment "on its own line under a heading",
+// so it comes first there whatever else stands below the same heading, and
+// whichever was made first.
+test('a section note is the first thing under its heading, even when made last', () => {
+  const comment = '{>>[section note] In short: fine.<<}';
+  const made = (order) => body(SECTIONS, (doc) => {
+    const risks = headingBlock(doc, '## Risks');
+    const notes = {
+      block: blockNote(doc, risks, { label: 'keep', note: 'Good heading.' }),
+      section: sectionNote(doc, risks, 'In short: fine.'),
+    };
+    return order.map((name) => notes[name]);
+  });
+  const expected = withCommentUnder('## Risks', `${comment}\n\n{>>[keep] Good heading.<<}`);
+  assert.equal(made(['section', 'block']), expected);
+  assert.equal(made(['block', 'section']), expected);
+});
+
+test('the lead of an unplaced section note drops closing #s and a heading underline', () => {
+  const doc = openDoc(marked, SECTIONS);
+  const gone = (exact) => ({
+    ...sectionNote(doc, headingBlock(doc, '## Risks'), 'lost'), target: { block: 99, exact },
+  });
+  const lead = (exact) => {
+    const out = withoutLegend(exportDoc(doc, [gone(exact)], { unplaced: [gone(exact).id] }));
+    return /On the section "([^"]*)"/.exec(out)[1];
+  };
+  assert.equal(lead('## Risks ##'), 'Risks'); // "## Risks ##" is the same heading as "## Risks"
+  // A heading made by underlining, as the note remembers it on one line.
+  assert.equal(lead('Setext title ============'), 'Setext title');
+  assert.equal(lead('Smaller title ------'), 'Smaller title');
+  // A # or a dash that is part of the words stays.
+  assert.equal(lead('## Learning C#'), 'Learning C#');
+  assert.equal(lead('## Well-known risks'), 'Well-known risks');
 });

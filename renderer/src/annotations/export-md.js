@@ -47,6 +47,9 @@ const LEGEND_INTRO = '> **Reviewer annotations (CriticMarkup).** '
   + 'or on the block above when it stands on its own line.';
 const UNPLACED_INTRO = '> **Unplaced reviewer notes.** '
   + 'The text these notes referred to is no longer in the document.';
+// Added to the legend only when the document has section notes.
+const SECTION_INTRO = '`{>>[section note] comment<<}` on its own line under a heading is the '
+  + 'reviewer\'s own summing-up of that whole section, subsections included.';
 
 // ---- The export itself --------------------------------------------------------
 
@@ -100,16 +103,18 @@ export function annotatedMarkdown(marked, source, annotations, opts) {
 
     if (edit) {
       // rank decides the order of insertions that share one position:
-      // 0 = closing markup, 1 = comment below the block, 2 = the newline
-      // after such comments, 3 = opening markup. So when two marks touch,
-      // the first one closes before the second opens.
+      // 0 = closing markup, 0.5 = a section note below its heading, 1 = any
+      // other comment below the block, 2 = the newline after such comments,
+      // 3 = opening markup. So when two marks touch, the first one closes
+      // before the second opens, and a section note is always the first
+      // thing under its heading.
       inserts.push({ at: block.start + edit.start, rank: 3, seq, text: edit.open });
       inserts.push({ at: block.start + edit.end, rank: 0, seq, text: edit.close + edit.comment });
     } else {
       // Just after the block's last visible character.
       const at = block.start + blockSrc.trimEnd().length;
       const lead = leadFor(a, block, blockSrc, where);
-      inserts.push({ at, rank: 1, seq, text: `\n\n${belowComment(a, lead)}` });
+      inserts.push({ at, rank: a.kind === 'section' ? 0.5 : 1, seq, text: `\n\n${belowComment(a, lead)}` });
       // Usually a blank line follows the block and nothing more is needed.
       // When text follows on the very next line (a "Caption:" line under a
       // diagram, say) one more newline keeps the comment from being read as
@@ -134,7 +139,7 @@ export function annotatedMarkdown(marked, source, annotations, opts) {
 
   if (unplaced.length) {
     if (!out.endsWith('\n')) out += '\n';
-    const notes = unplaced.map((a) => belowComment(a, quoteLead(a)));
+    const notes = unplaced.map((a) => belowComment(a, a.kind === 'section' ? sectionLead(a) : quoteLead(a)));
     out += `\n${UNPLACED_INTRO}\n\n${notes.join('\n\n')}\n`;
   }
   return out;
@@ -208,6 +213,8 @@ const labelOf = (a) => clean(a.label) || 'note';
 // "[underline, question]". A struck-out phrase is already shown by {-- --}
 // when written inline, so "strike" is only spelled out in the below-block form.
 function tagsFor(a, below) {
+  // A section note has no colour label: it is the reviewer's summary.
+  if (a.kind === 'section') return '[section note]';
   const tags = [];
   if (a.kind === 'underline') tags.push('underline');
   if (a.kind === 'strike' && below) tags.push('strike');
@@ -246,9 +253,23 @@ function quoteLead(a, line) {
   return line ? `On code line ${line} "${quote}"` : `On "${quote}"`;
 }
 
+// 'On the section "Risks"', for a section note whose heading is gone. The
+// note remembers the heading as it was written. What marks it as a heading
+// comes off: "## Risks", "## Risks ##", and "Risks ------" (a heading made
+// by underlining, as the note remembers it on one line).
+function sectionLead(a) {
+  const written = String((a.target && a.target.exact) ?? '')
+    .replace(/^\s*#+\s*/, '')
+    .replace(/\s+#+\s*$/, '')
+    .replace(/\s+(=+|-+)\s*$/, '');
+  const title = readableQuote(written);
+  return title ? `On the section "${title}"` : '';
+}
+
 // The lead of a below-block comment for an annotation that was placed.
 function leadFor(a, block, blockSrc, where) {
-  if (a.kind === 'block') return ''; // it stands below its block: nothing to add
+  // It stands below its block (for a section note: its heading): nothing to add.
+  if (a.kind === 'block' || a.kind === 'section') return '';
   const line = block.type === 'code' ? codeLineOf(blockSrc, where.start) : null;
   return quoteLead(a, line);
 }
@@ -267,9 +288,12 @@ function legend(items, labels) {
     // ("good, keep as is").
     lines.push(`> Labels: ${meanings.join('; ')}.`);
   }
+  // Section notes are counted on a line of their own, not under a label.
+  const sections = items.filter((a) => a.kind === 'section').length;
   // A selection across several blocks is several records but ONE annotation.
   const seenGroups = new Set();
   const counted = items.filter((a) => {
+    if (a.kind === 'section') return false;
     if (!a.group) return true;
     if (seenGroups.has(a.group)) return false;
     seenGroups.add(a.group);
@@ -281,7 +305,8 @@ function legend(items, labels) {
   for (const a of counted) counts.set(labelOf(a), (counts.get(labelOf(a)) || 0) + 1);
   const parts = [...counts].filter(([, n]) => n > 0).map(([id, n]) => `${n} ${id}`);
   const noun = counted.length === 1 ? 'annotation' : 'annotations';
-  lines.push(`> ${counted.length} ${noun}: ${parts.join(', ')}.`);
+  if (counted.length) lines.push(`> ${counted.length} ${noun}: ${parts.join(', ')}.`);
+  if (sections) lines.push(`> ${sections} section ${sections === 1 ? 'note' : 'notes'}: ${SECTION_INTRO}`);
   return `${lines.join('\n')}\n\n`;
 }
 

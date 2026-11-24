@@ -39,7 +39,15 @@ function createWindow() {
       spellcheck: false,
     },
   });
-  win.once('ready-to-show', () => win.show());
+  if (TEST_OUT) {
+    // The automated tests drive this window themselves. It must not take the
+    // keyboard away from whatever the person at the computer is doing, and
+    // their mouse must not scroll or click it in the middle of a check.
+    win.setIgnoreMouseEvents(true);
+    win.once('ready-to-show', () => win.showInactive());
+  } else {
+    win.once('ready-to-show', () => win.show());
+  }
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 
   // The app window must never navigate away from its own page. Links inside
@@ -472,7 +480,7 @@ async function runTestMode(win) {
       // then change the layout (relayout) or the text (editedMdFile).
       let annotations = null;
       const paper = { ...(s.settings || {}), ...(s.relayout || {}) }.paper;
-      if (s.annotationsFile || s.quotes || s.acrossBreak || s.docFile) {
+      if (s.annotationsFile || s.quotes || s.acrossBreak || s.docFile || s.sectionNotes) {
         annotations = { missed: [] };
         if (s.quotes || s.acrossBreak) {
           await hook('setAnnotateMode', true);
@@ -501,6 +509,23 @@ async function runTestMode(win) {
         annotations.linesMoved = Math.max(gone.length, added.length);
         if (annotations.linesMoved) {
           annotations.movedSample = { was: gone.slice(0, 6).map((l) => l.join(':')), now: added.slice(0, 6).map((l) => l.join(':')) };
+        }
+        // Section notes, made the way a user makes them: click the heading
+        // in the contents list, type in the box that opens, click away.
+        if (s.sectionNotes) {
+          await hook('setAnnotateMode', true);
+          await hook('settle');
+          const sections = { steps: [] };
+          for (const step of s.sectionNotes) {
+            await hook('jumpToSection', step.row);
+            const opened = await hook('notesPane');
+            const typed = await hook('typeSectionNote', step.text);
+            sections.steps.push({ row: step.row, opened, typed });
+          }
+          sections.contents = await hook('contents');
+          sections.all = await hook('showAllNotes');
+          sections.openAfterAll = (await hook('contents')).open;
+          annotations.sections = sections;
         }
         if (s.relayout) await hook('relayout', s.relayout);
         if (s.editedMdFile) await hook('replaceMarkdown', fs.readFileSync(s.editedMdFile, 'utf8'));
@@ -538,6 +563,26 @@ async function runTestMode(win) {
         fs.writeFileSync(path.join(out, annotations.sidecarFile), JSON.stringify(await hook('sidecar'), null, 2));
       }
 
+      // Optional: the contents column. It only exists in Annotate mode, so
+      // that goes on first. The list is read back, a few rows are clicked the
+      // way a user clicks them, and the column is switched off and on again.
+      let contents = null;
+      if (s.contents) {
+        await hook('setAnnotateMode', true);
+        await hook('settle');
+        contents = { list: await hook('contents'), jumps: [] };
+        for (const index of s.contents.jumpTo || []) {
+          contents.jumps.push({ index, ...(await hook('jumpToSection', index)) });
+        }
+        await hook('setContentsVisible', false);
+        contents.shownWhenSwitchedOff = (await hook('contents')).shown;
+        await hook('setContentsVisible', true);
+        await hook('setAnnotateMode', false);
+        contents.shownOutsideAnnotate = (await hook('contents')).shown;
+        await hook('setAnnotateMode', true); // so the screenshot shows the column
+        await hook('settle');
+      }
+
       // Every Mermaid diagram as it ended up on the pages: in one piece, with
       // its styles, inside its page? test/run.js judges the answers.
       const diagramsOnPages = await hook('diagramsOnPages');
@@ -563,6 +608,7 @@ async function runTestMode(win) {
         screenshot: pngName,
         pdfBytes: pdf.length,
         annotations,
+        contents,
       });
     }
   } catch (err) {

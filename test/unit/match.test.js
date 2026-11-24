@@ -247,3 +247,51 @@ test('locateBlock: with no excerpt the saved index is trusted if it exists', () 
   assert.equal(locateBlock({ block: 5, exact: '' }, sources), null);
   assert.equal(locateBlock({ block: -1, exact: '' }, sources), null);
 });
+
+// Block number 0 is a perfectly good answer. (It once came back as "not
+// found", because JavaScript counts the number 0 as false.)
+test('locateBlock: the first block of the document can be the one that is found', () => {
+  // Two blocks begin alike and nothing is saved about copies: the note stays
+  // where it was made, even when that is block 0.
+  assert.equal(locateBlock({ block: 0, exact: '# Plan' }, ['#Plan', 'Intro.', '#PlanB', 'More.']), 0);
+  assert.equal(locateBlock({ block: 0, exact: '## Notes' }, ['##Notes', 'One.', '##Notes', 'Two.']), 0);
+  assert.equal(locateBlock({ block: 2, exact: '## Notes' }, ['##Notes', 'One.', '##Notes', 'Two.']), 2);
+});
+
+// ---- locateBlock with { whole: true } (section notes) ---------------------------
+// A section note remembers its whole heading, so only a block that reads
+// exactly the same may take it.
+
+test('locateBlock whole: a heading that only begins the same way is not a match', () => {
+  const sources = ['#Plan', 'Intro.', '##Risksandmitigations', 'Text.'];
+  // Without `whole` the note would follow the longer heading...
+  assert.equal(locateBlock({ block: 7, exact: '## Risks' }, sources), 2);
+  // ...with it, the heading is gone and the note becomes unplaced.
+  assert.equal(locateBlock({ block: 7, exact: '## Risks' }, sources, { whole: true }), null);
+  assert.equal(locateBlock({ block: 5, exact: '## Step 1' }, ['##Step10', 'Text.'], { whole: true }), null);
+});
+
+test('locateBlock whole: the same heading is followed when it moves', () => {
+  const sources = ['#Plan', 'New intro.', 'More.', '##Risks', 'Text.', '##Risksandmitigations'];
+  assert.equal(locateBlock({ block: 2, exact: '## Risks' }, sources, { whole: true }), 3);
+  // Spaces do not matter, as everywhere else.
+  assert.equal(locateBlock({ block: 2, exact: '##   Risks ' }, sources, { whole: true }), 3);
+});
+
+test('locateBlock whole: a longer heading nearby does not make the right one ambiguous', () => {
+  // By prefix both headings are candidates and, with nothing saved about
+  // copies, a note that has moved cannot be told apart. Whole-heading
+  // matching has only one candidate.
+  const sources = ['Intro.', '##Risksandmitigations', 'Text.', '##Risks', 'Text.'];
+  assert.equal(locateBlock({ block: 0, exact: '## Risks' }, sources), null);
+  assert.equal(locateBlock({ block: 0, exact: '## Risks' }, sources, { whole: true }), 3);
+});
+
+test('blockOccurrenceOf whole: only identical headings count as copies', () => {
+  const sources = ['##Notes', 'One.', '##Notesonpricing', 'Two.', '##Notes', 'Three.'];
+  // By prefix there are three blocks that begin "## Notes"...
+  assert.deepEqual(blockOccurrenceOf({ block: 4, exact: '## Notes' }, sources, 4), { nth: 2, of: 3 });
+  // ...but only two headings that ARE "## Notes".
+  assert.deepEqual(blockOccurrenceOf({ block: 4, exact: '## Notes' }, sources, 4, { whole: true }), { nth: 1, of: 2 });
+  assert.equal(blockOccurrenceOf({ block: 2, exact: '## Notes on pricing' }, sources, 2, { whole: true }), null);
+});

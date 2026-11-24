@@ -16,6 +16,27 @@ const sample = () => valid([
   { id: 'a2', kind: 'note', body: 'Line one\nLine two' },
 ]);
 
+// A section note the way the app saves it: the reviewer's own note on a whole
+// section, stored like a note on a block (the block is the section's heading).
+const sectionNote = () => ({
+  id: 's1',
+  kind: 'section',
+  label: 'note',
+  note: 'Mostly fine.\nCheck the “clock” part — naïve?',
+  target: { block: 4, exact: '## Risks' },
+  created: '2026-11-16T10:00:00.000Z',
+  modified: '2026-11-16T10:00:00.000Z',
+});
+// A whole file that holds one. The app marks such a file version 2, so an
+// older copy of the app (which only knows version 1) leaves it alone.
+const withSectionNote = () => ({
+  format: FORMAT,
+  version: 2,
+  document: { name: 'plan.md', hash: '9f2c41aa', chars: 19 },
+  annotations: [{ id: 'a1', kind: 'highlight', label: 'question' }, sectionNote()],
+  drawings: [],
+});
+
 // Every test gets its own scratch folder holding a document called plan.md.
 let dir;
 let doc;
@@ -91,6 +112,16 @@ describe('validateSidecar', () => {
     for (const version of [0, -1, 1.5, VERSION + 1, NaN, Infinity, '1', null, undefined, [1]]) {
       assert.equal(validateSidecar({ ...valid(), version }), false, `version ${String(version)}`);
     }
+  });
+
+  it('accepts version 1 and version 2 files and nothing newer', () => {
+    // Version 2 added section notes. The numbers are written out here, not
+    // taken from VERSION, so a change to VERSION has to be made on purpose.
+    assert.equal(VERSION, 2);
+    assert.equal(validateSidecar({ format: FORMAT, version: 1, annotations: [] }), true);
+    assert.equal(validateSidecar({ format: FORMAT, version: 2, annotations: [] }), true);
+    assert.equal(validateSidecar({ format: FORMAT, version: 3, annotations: [] }), false);
+    assert.equal(validateSidecar(withSectionNote()), true);
   });
 
   it('needs annotations to be an array of at most 5000 entries', () => {
@@ -182,6 +213,28 @@ describe('readSidecar', () => {
     fs.writeFileSync(side, JSON.stringify({ format: FORMAT, version: VERSION + 41, pages: {} }), 'utf8');
     assert.deepEqual(readSidecar(doc), { status: 'newer', version: VERSION + 41 });
   });
+
+  it('still reads a version 1 file, written before section notes existed', () => {
+    const old = { format: FORMAT, version: 1, annotations: [{ id: 'a1', kind: 'highlight' }] };
+    fs.writeFileSync(side, JSON.stringify(old), 'utf8');
+    assert.deepEqual(readSidecar(doc), { status: 'ok', data: old });
+  });
+
+  it('reads a version 2 file with a section note in it', () => {
+    fs.writeFileSync(side, JSON.stringify(withSectionNote()), 'utf8');
+    const result = readSidecar(doc);
+    assert.deepEqual(result, { status: 'ok', data: withSectionNote() });
+    // The section note comes back whole: this module passes records through
+    // untouched (the page checks them one by one, see model.js).
+    assert.deepEqual(result.data.annotations[1], sectionNote());
+  });
+
+  it('reports version 3 as newer', () => {
+    // What a later copy of the app might write. This copy reads up to version 2.
+    const later = { ...withSectionNote(), version: 3 };
+    fs.writeFileSync(side, JSON.stringify(later), 'utf8');
+    assert.deepEqual(readSidecar(doc), { status: 'newer', version: 3 });
+  });
 });
 
 describe('writeSidecar', () => {
@@ -191,6 +244,43 @@ describe('writeSidecar', () => {
     assert.equal(side, sidecarPath(doc));
     assert.equal(fs.readFileSync(side, 'utf8'), JSON.stringify(data, null, 2));
     assert.deepEqual(readSidecar(doc), { status: 'ok', data });
+  });
+
+  it('round-trips a version 2 file that holds a section note', () => {
+    const data = withSectionNote();
+    assert.equal(writeSidecar(doc, data), side);
+    // On disk: marked version 2, and the section note is in it as given.
+    const onDisk = JSON.parse(fs.readFileSync(side, 'utf8'));
+    assert.equal(onDisk.version, 2);
+    assert.deepEqual(onDisk.annotations[1], sectionNote());
+    // Read back: exactly what was written, nothing added or dropped.
+    assert.deepEqual(readSidecar(doc), { status: 'ok', data });
+    assert.deepEqual(data, withSectionNote()); // and writing did not change what it was given
+    assert.deepEqual(listing(), ['plan.md', 'plan.md.annotations.json']);
+  });
+
+  it('writes a version 1 file over a version 2 file once the section note is gone', () => {
+    writeSidecar(doc, withSectionNote());
+    // The same notes without the section note: the app marks that version 1 again.
+    const without = { ...withSectionNote(), version: 1, annotations: [withSectionNote().annotations[0]] };
+    assert.equal(writeSidecar(doc, without), side);
+    assert.deepEqual(readSidecar(doc), { status: 'ok', data: without });
+    // A plain replacement: the version 2 file was fine, so no backup is made.
+    assert.deepEqual(listing(), ['plan.md', 'plan.md.annotations.json']);
+  });
+
+  it('refuses to save version 3 data and leaves a version 3 file alone', () => {
+    const later = { ...withSectionNote(), version: 3 };
+    assert.throws(() => writeSidecar(doc, later), (err) => err instanceof Error && err.message.length > 0);
+    assert.deepEqual(listing(), ['plan.md']);
+
+    // A version 3 file already beside the document is not overwritten, not
+    // even by a version 2 file with a section note.
+    fs.writeFileSync(side, JSON.stringify(later), 'utf8');
+    const before = fs.readFileSync(side);
+    assert.throws(() => writeSidecar(doc, withSectionNote()), /newer version/);
+    assert.deepEqual(fs.readFileSync(side), before);
+    assert.deepEqual(listing(), ['plan.md', 'plan.md.annotations.json']);
   });
 
   it('leaves no temp file behind and never touches the document', () => {

@@ -61,7 +61,10 @@ function pickAmongEqual(candidates, known, isSamePlace) {
   }
   // Nothing saved about copies (a note made a moment ago, before it was
   // first painted): only the exact same place is acceptable.
-  return candidates.find(isSamePlace) || null;
+  // (Not "find(...) || null": a candidate can be block number 0, which
+  // JavaScript counts as false.)
+  const same = candidates.find(isSamePlace);
+  return same === undefined ? null : same;
 }
 
 // Find a saved quote again. `texts[n]` is block n's rendered text, squeezed.
@@ -100,13 +103,16 @@ export function occurrenceOf(target, texts, hit) {
   return same.length > 1 ? { nth: same.indexOf(mine), of: same.length } : null;
 }
 
-// The blocks whose Markdown source begins the way the note remembers.
-function blockCandidates(target, sources) {
+// The blocks whose Markdown source begins the way the note remembers. With
+// `whole`, the note remembers its block from start to finish, so the block has
+// to BE those words, not merely begin with them.
+function blockCandidates(target, sources, whole) {
   const fp = squeeze(target.exact); // fp = fingerprint
   const found = [];
   if (!fp) return found;
   sources.forEach((source, n) => {
-    if (typeof source === 'string' && source.startsWith(fp)) found.push(n);
+    if (typeof source !== 'string') return;
+    if (whole ? source === fp : source.startsWith(fp)) found.push(n);
   });
   return found;
 }
@@ -115,13 +121,19 @@ function blockCandidates(target, sources) {
 // the squeezed Markdown source of block n. The note remembers how its block
 // began (target.exact); we look for the block that still begins that way.
 // Returns the block's index or null.
-export function locateBlock(target, sources) {
+//
+// opts.whole  target.exact is the block's complete text (a short heading, for
+//             a section note). Then only a block that reads exactly the same
+//             will do: a note on "## Step 1" must not move to "## Step 10"
+//             when its own heading is deleted.
+export function locateBlock(target, sources, opts) {
   if (!target || !Array.isArray(sources)) return null;
+  const whole = Boolean(opts && opts.whole);
   const { block } = target;
   const valid = Number.isInteger(block) && block >= 0 && block < sources.length;
   if (!squeeze(target.exact)) return valid ? block : null; // nothing to compare: trust the number
 
-  const found = blockCandidates(target, sources);
+  const found = blockCandidates(target, sources, whole);
   if (found.length === 0) return null;
   if (found.length === 1) return found[0];
   // Several blocks begin the same way (two tables with the same header row).
@@ -130,9 +142,9 @@ export function locateBlock(target, sources) {
 }
 
 // Which of several blocks that begin alike block `n` is: { nth, of } or null.
-export function blockOccurrenceOf(target, sources, n) {
+export function blockOccurrenceOf(target, sources, n, opts) {
   if (!target || !Array.isArray(sources)) return null;
-  const found = blockCandidates(target, sources);
+  const found = blockCandidates(target, sources, Boolean(opts && opts.whole));
   const nth = found.indexOf(n);
   return found.length > 1 && nth !== -1 ? { nth, of: found.length } : null;
 }

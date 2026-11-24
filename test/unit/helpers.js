@@ -116,6 +116,33 @@ export function blockNote(doc, block, props = {}) {
   };
 }
 
+// The block number of the heading written as `line` in the Markdown
+// ("## Risks"). Headings inside code blocks do not count: they are code.
+export function headingBlock(doc, line) {
+  const index = doc.source.blocks.findIndex((b) => b.type === 'heading'
+    && doc.source.src.slice(b.start, b.end).trim() === line);
+  if (index === -1) throw new Error(`No heading "${line}"`);
+  return index;
+}
+
+// A section note: the reviewer's own note on a whole section. `block` is the
+// section's heading. It is saved the way the app saves it, like a note on a
+// block: the heading's Markdown ("## Risks") is the text it remembers.
+export function sectionNote(doc, block, note = '') {
+  const b = doc.source.blocks[block];
+  if (!b || b.type !== 'heading') throw new Error(`Block ${block} is not a heading`);
+  const exact = doc.source.src.slice(b.start, b.end).replace(/\s+/g, ' ').trim().slice(0, 80);
+  return {
+    id: `a${++counter}`,
+    kind: 'section',
+    label: 'note', // the app always stores "note"; a section note has no colour
+    note,
+    target: { block, exact },
+    created: '2026-11-16T10:00:00.000Z',
+    modified: '2026-11-16T10:00:00.000Z',
+  };
+}
+
 // Run the export. Every annotation counts as found exactly where it was
 // made, except the ids listed in `unplaced`.
 export function exportDoc(doc, annotations, { unplaced = [], labels = DEFAULT_LABELS } = {}) {
@@ -123,14 +150,18 @@ export function exportDoc(doc, annotations, { unplaced = [], labels = DEFAULT_LA
   for (const a of annotations) {
     if (unplaced.includes(a.id)) continue;
     const { block, start, end } = a.target;
-    resolved[a.id] = a.kind === 'block' ? { block } : { block, start, end };
+    // As in the app: a block note and a section note are found as a whole
+    // block, a note on words also has the place of those words in it.
+    const wholeBlock = a.kind === 'block' || a.kind === 'section';
+    resolved[a.id] = wholeBlock ? { block } : { block, start, end };
   }
   return annotatedMarkdown(doc.marked, doc.source, annotations, {
     labels, resolved, texts: doc.texts, docName: 'test.md',
   });
 }
 
-// The export without the legend at the top (three "> " lines and a blank line).
+// The export without the legend at the top (its "> " lines, three or four of
+// them, and the blank line that follows).
 export function withoutLegend(exported) {
   return exported.slice(exported.indexOf('\n\n') + 2);
 }

@@ -9,6 +9,10 @@
 //     and the preview zoom never changes where pages break or what they hold
 //   - annotation scenarios: notes attach, no line of text moves, margin notes
 //     are real text in the PDF (pdftotext), the Markdown export matches
+//   - contents column scenarios: the headings, pages and note counts it lists,
+//     and where a click on a row takes the page
+//   - section notes: typed in the notes pane, listed, ticked in the contents,
+//     written under their heading in the Markdown export, never printed
 // Usage: node test/run.js [--no-sandbox]
 const { spawnSync, execFileSync } = require('node:child_process');
 const fs = require('node:fs');
@@ -35,6 +39,9 @@ const sampleNotes = path.join(__dirname, 'fixtures', 'sample.annotations.json');
 const sampleEdited = path.join(__dirname, 'fixtures', 'sample-edited.md');
 const sampleAnnotatedMd = path.join(__dirname, 'fixtures', 'sample.annotated.md');
 const margin = { layout: 'margin', paper: 'letter', notes: 'medium', pattern: 'dots', breakH2: false };
+// A one-page document whose last heading sits low on the page, where no
+// amount of scrolling can bring it to the top of the window.
+const lastHeadingLow = ['# Short plan', '## First', ...Array.from({ length: 16 }, (_, i) => `Filler paragraph ${i + 1}.`), '## Last', 'The end.'].join('\n\n');
 const noteCount = fs.existsSync(sampleNotes) ? JSON.parse(fs.readFileSync(sampleNotes, 'utf8')).annotations.length : 0;
 // The tall-diagram plan in each of the three layouts, on both papers, with
 // and without a new page at each H2.
@@ -133,13 +140,82 @@ const scenarios = [
   // Opening a file and never annotating it leaves no notes file behind.
   { name: 'file-without-notes', settings: margin, mdFile: sample, docFile: sample, minPages: 2,
     expectPersist: { status: 'none', restored: 0, sidecarExists: false, markdownUntouched: true } },
+
+  // ---- Contents column ----
+  // Annotate mode lists every "#", "##" and "###" heading with its page. A
+  // note is counted on its own section and on the section that one sits in
+  // ("Implementation" adds up its numbered steps), but the document title
+  // does not add up the whole document. A click on a row brings that heading
+  // to the top of the view and lights the row. The column is gone when it is
+  // switched off and outside Annotate mode, and costs the pages nothing.
+  { name: 'contents-column', settings: margin, minPages: 2, samePagesAs: 'margin-letter-dots', linesMustNotMove: true,
+    quotes: [
+      { quote: 'roughly 40k requests in ten minutes', kind: 'highlight', label: 'important', note: 'Source?' },
+      { quote: 'racy under concurrency', kind: 'highlight', label: 'question', note: '' },
+      { quote: 'in whole seconds', kind: 'underline', label: 'keep', note: '' },
+      { quote: 'Hot keys.', kind: 'highlight', label: 'note', note: 'Worth a dashboard.' },
+    ],
+    expectNotes: { placed: 4, unplaced: 0 },
+    // Row 4 ("Implementation") is followed at once by a subheading; its own
+    // row must be the one that is lit after a click on it.
+    contents: { jumpTo: [4, 6, 9] },
+    expectContents: {
+      titles: ['Add rate limiting to the public API', 'Context', 'Approach', 'Files to touch (in order)', 'Implementation',
+        '1. Token bucket', '2. Middleware', '3. Atomic update with Lua', '4. Response headers', 'Verification', 'Risks', 'Open questions'],
+      counts: [0, 1, 0, 0, 2, 1, 0, 0, 1, 0, 1, 0],
+      indents: [0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0],
+      notes: 4,
+    } },
+  // ---- Section notes ----
+  // A click on a heading in the contents opens that section in the notes
+  // pane: a box for your own note on the section, with the notes made inside
+  // it underneath. What is typed there is saved when the box is left, is
+  // listed as a "Section note", ticks its row in the contents, is written
+  // under its heading in the Markdown export, survives a re-layout, and is
+  // never printed on the page.
+  { name: 'section-notes', settings: margin, minPages: 2, linesMustNotMove: true,
+    quotes: [
+      { quote: 'roughly 40k requests in ten minutes', kind: 'highlight', label: 'important', note: 'Source?' },
+      { quote: 'racy under concurrency', kind: 'highlight', label: 'question', note: '' },
+      { quote: 'in whole seconds', kind: 'underline', label: 'keep', note: '' },
+      { quote: 'Hot keys.', kind: 'highlight', label: 'note', note: 'Worth a dashboard.' },
+    ],
+    sectionNotes: [
+      { row: 4, text: 'Implementation is sound.\nThe Lua step is the risky part.' },
+      { row: 10, text: 'Risks are understated.' },
+    ],
+    relayout: { breakH2: true },
+    expectNotes: { placed: 6, unplaced: 0, cards: 2 },
+    marginText: ['Source?', 'Worth a dashboard.'],
+    pdfLacks: ['Risks are understated.', 'The Lua step is the risky part.'],
+    mdText: [
+      '## Implementation\n\n{>>[section note] Implementation is sound. The Lua step is the risky part.<<}\n',
+      '## Risks\n\n{>>[section note] Risks are understated.<<}\n',
+      '> 4 annotations: 1 note, 1 question, 1 keep, 1 important.',
+      '> 2 section notes: ',
+    ],
+    expectSections: {
+      steps: [
+        { title: 'Implementation', notes: 2, meta: '2 notes in this section', stored: 'Implementation is sound.\nThe Lua step is the risky part.' },
+        { title: 'Risks', notes: 1, meta: '1 note in this section', stored: 'Risks are understated.' },
+      ],
+      ticks: [4, 10],
+      counts: [0, 1, 0, 0, 2, 1, 0, 0, 1, 0, 1, 0],
+      summary: '12 sections · 4 notes · 2 section notes',
+      total: 6,
+    } },
+  // The last heading cannot be scrolled to the top (the document ends first).
+  // Its row must still be the one that is lit after a click on it.
+  { name: 'contents-last-heading', settings: margin, md: lastHeadingLow, minPages: 1, maxPages: 1,
+    contents: { jumpTo: [2] },
+    expectContents: { titles: ['Short plan', 'First', 'Last'], counts: [0, 0, 0], indents: [0, 0, 0], notes: 0, lastJumpAtEnd: true } },
 ];
 
 const env = {
   ...process.env,
   PLAN_PRINTER_TEST_OUT: out,
-  PLAN_PRINTER_TEST_SCENARIOS: JSON.stringify(scenarios.map(({ name, settings, md, mdFile, annotationsFile, quotes, acrossBreak, relayout, editedMdFile, hidden, docFile }) => (
-    { name, settings, md, mdFile, annotationsFile, quotes, acrossBreak, relayout, editedMdFile, hidden, docFile }))),
+  PLAN_PRINTER_TEST_SCENARIOS: JSON.stringify(scenarios.map(({ name, settings, md, mdFile, annotationsFile, quotes, acrossBreak, relayout, editedMdFile, hidden, docFile, contents, sectionNotes }) => (
+    { name, settings, md, mdFile, annotationsFile, quotes, acrossBreak, relayout, editedMdFile, hidden, docFile, contents, sectionNotes }))),
 };
 
 console.log(`Launching Electron test mode (${scenarios.length} scenarios)…`);
@@ -223,6 +299,107 @@ function diagramProblems({ rendered, figures }) {
     if (!f.onPage) found.push(`${where} is not inside the page's text area (cut off or out of sight)`);
   }
   return found;
+}
+
+// What is wrong with the contents column of one scenario ([] when nothing is).
+//   got        what the app reported: { list, jumps, shownWhenSwitchedOff, shownOutsideAnnotate }
+//   want       the scenario's expectContents
+//   pageCount  pages in the PDF
+function contentsProblems(got, want, pageCount) {
+  if (!got || !got.list) return ['no contents results in the report'];
+  const problems = [];
+  const { list } = got;
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const column = (key) => list.rows.map((row) => row[key]);
+  if (!list.shown) problems.push('the contents column is not shown in Annotate mode');
+  if (!same(column('title'), want.titles)) problems.push(`contents lists ${JSON.stringify(column('title'))}`);
+  if (!same(column('count'), want.counts)) problems.push(`contents counts are ${JSON.stringify(column('count'))}, expected ${JSON.stringify(want.counts)}`);
+  if (!same(column('indent'), want.indents)) problems.push(`contents indents are ${JSON.stringify(column('indent'))}, expected ${JSON.stringify(want.indents)}`);
+  if (list.notes !== want.notes) problems.push(`contents total is ${list.notes} notes, expected ${want.notes}`);
+  // What is drawn on screen must be what the outline says.
+  if (!same(list.drawn, column('title'))) problems.push(`rows on screen are ${JSON.stringify(list.drawn)}`);
+  if (!same(list.counts, column('count'))) problems.push(`counts on screen are ${JSON.stringify(list.counts)}`);
+  if (!same(list.pages, column('page'))) problems.push(`page numbers on screen are ${JSON.stringify(list.pages)}, the outline says ${JSON.stringify(column('page'))}`);
+  // Page numbers are real pages and never go backwards down the list.
+  const pages = column('page');
+  if (pages.some((p, i) => !(Number.isInteger(p) && p >= 1 && p <= pageCount && (i === 0 || p >= pages[i - 1])))) {
+    problems.push(`contents page numbers ${JSON.stringify(pages)} are not rising whole numbers from 1 to ${pageCount}`);
+  }
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  const summary = `${plural(want.titles.length, 'section')} · ${plural(want.notes, 'note')}`;
+  if (list.summary !== summary) problems.push(`contents summary reads "${list.summary}", expected "${summary}"`);
+  const jumps = got.jumps || [];
+  jumps.forEach((jump, n) => {
+    const row = `row ${jump.index} ("${want.titles[jump.index]}")`;
+    if (jump.offset === null || jump.offset === undefined) {
+      problems.push(`a click on ${row} found no heading to scroll to`);
+      return;
+    }
+    if (jump.current !== jump.index) problems.push(`after a click on ${row}, row ${jump.current} is lit`);
+    if (!jump.flashed) problems.push(`the heading of ${row} did not flash`);
+    // The heading lands 24px below the top of the view (JUMP_GAP in
+    // contents.js), unless the document ends before it can get there.
+    if (!jump.atEnd && Math.abs(jump.offset - 24) > 3) problems.push(`after a click on ${row} its heading is ${jump.offset}px below the top of the view, expected 24`);
+    if (jump.atEnd && !(jump.offset >= 0 && jump.offset < jump.viewHeight)) problems.push(`after a click on ${row} its heading is not on screen (${jump.offset}px of ${jump.viewHeight})`);
+    if (want.lastJumpAtEnd && n === jumps.length - 1 && !(jump.atEnd && jump.offset > 24 + 3)) {
+      problems.push(`the click on ${row} was meant to run out of room to scroll, but its heading reached ${jump.offset}px`);
+    }
+  });
+  if (got.shownWhenSwitchedOff !== false) problems.push('the contents column is still shown after it was switched off');
+  if (got.shownOutsideAnnotate !== false) problems.push('the contents column is shown outside Annotate mode');
+  return problems;
+}
+
+// What is wrong with the section notes of one scenario ([] when nothing is).
+//   got    what the app reported: { steps: [{ row, opened, typed }], contents, all, openAfterAll }
+//   want   the scenario's expectSections
+//   saved  the notes file the app would write
+function sectionProblems(got, want, saved) {
+  if (!got || !Array.isArray(got.steps)) return ['no section note results in the report'];
+  const problems = [];
+  const same = (x, y) => JSON.stringify(x) === JSON.stringify(y);
+  want.steps.forEach((step, n) => {
+    const { opened, typed } = got.steps[n] || {};
+    const what = `section "${step.title}"`;
+    if (!opened || !typed) {
+      problems.push(`${what} did not open in the notes pane`);
+      return;
+    }
+    // A click on its row in the contents opens the section...
+    if (opened.section !== step.title) problems.push(`the notes pane shows section "${opened.section}", expected "${step.title}"`);
+    if (!opened.box || !opened.allButton) problems.push(`${what} opened without its note box or its All notes button`);
+    if (opened.boxText !== '') problems.push(`the note box of ${what} was not empty to begin with: "${opened.boxText}"`);
+    // ...with the notes made inside it underneath, and no others.
+    if (opened.title !== `Notes (${step.notes})` || opened.rows.length !== step.notes) problems.push(`${what} lists ${opened.rows.length} notes under "${opened.title}", expected ${step.notes}`);
+    if (opened.meta !== step.meta) problems.push(`${what} says "${opened.meta}", expected "${step.meta}"`);
+    // What was typed is kept in the box after clicking away.
+    if (typed.boxText !== step.stored) problems.push(`after typing, the note box of ${what} holds ${JSON.stringify(typed.boxText)}`);
+  });
+  // The contents list: a tick on exactly those rows, the same counts as before.
+  const { contents, all } = got;
+  const ticked = contents.ticks.map((on, i) => (on ? i : -1)).filter((i) => i >= 0);
+  if (!same(ticked, want.ticks)) problems.push(`contents rows ${JSON.stringify(ticked)} are ticked, expected ${JSON.stringify(want.ticks)}`);
+  if (!same(contents.counts, want.counts)) problems.push(`with section notes the contents counts are ${JSON.stringify(contents.counts)}, expected ${JSON.stringify(want.counts)}`);
+  if (contents.summary !== want.summary) problems.push(`contents summary reads "${contents.summary}", expected "${want.summary}"`);
+  // "All notes": everything again, each section note as an entry of its own.
+  if (all.section !== null || all.box || all.allButton) problems.push('"All notes" did not close the section view');
+  if (got.openAfterAll !== -1) problems.push('a contents row is still marked as open after "All notes"');
+  if (all.title !== `Notes (${want.total})` || all.rows.length !== want.total) problems.push(`all notes: ${all.rows.length} rows under "${all.title}", expected ${want.total}`);
+  const listed = all.rows.filter((row) => row.sectionNote);
+  const flat = (text) => text.replace(/\s+/g, ' ');
+  want.steps.forEach((step) => {
+    const row = listed.find((r) => r.quote === step.title);
+    if (!row) problems.push(`no "Section note" entry for "${step.title}" in the full list`);
+    else if (row.label !== 'Section note' || flat(row.note) !== flat(step.stored)) problems.push(`the list entry for "${step.title}" reads ${JSON.stringify(row)}`);
+  });
+  if (all.chips.Section !== want.steps.length || all.chips.All !== want.total) problems.push(`filter chips count ${JSON.stringify(all.chips)}`);
+  // The notes file: one record per section note, and marked version 2 so an
+  // older copy of the app leaves it alone.
+  const records = saved ? saved.annotations.filter((r) => r.kind === 'section') : [];
+  if (!saved || records.length !== want.steps.length) problems.push(`the notes file holds ${records.length} section notes, expected ${want.steps.length}`);
+  else if (saved.version !== 2) problems.push(`a notes file with section notes is marked version ${saved.version}, expected 2`);
+  else if (!same(records.map((r) => r.note).sort(), want.steps.map((s) => s.stored).sort())) problems.push('the section notes in the notes file are not what was typed');
+  return problems;
 }
 
 const EXPECTED_SIZE = { letter: [612, 792], a4: [595.28, 841.89] };
@@ -311,12 +488,26 @@ for (const scenario of scenarios) {
           if (scenario.marginHasNotes === false && present) problems.push(`hidden note still printed: ${note}`);
           if (scenario.marginHasNotes !== false && !present) problems.push(`margin note not found in the PDF text: ${note}`);
         }
+        // Text that must not be anywhere in the PDF (section notes are not printed).
+        if (scenario.pdfLacks) {
+          const everything = squeeze(pdfText(pdfPath));
+          for (const piece of scenario.pdfLacks) {
+            if (everything.includes(squeeze(piece))) problems.push(`the PDF contains text that should not be printed: ${piece}`);
+          }
+        }
         if (scenario.samePdfTextAs) {
           const other = path.join(out, `${scenario.samePdfTextAs}.pdf`);
           if (pdfText(pdfPath) !== pdfText(other)) problems.push(`PDF text differs from ${scenario.samePdfTextAs}`);
         }
       } catch (e) { problems.push(`pdftotext failed: ${e.message}`); }
     }
+    // ---- Section note expectations ----
+    if (scenario.expectSections) {
+      const saved = a && a.sidecarFile ? JSON.parse(fs.readFileSync(path.join(out, a.sidecarFile), 'utf8')) : null;
+      problems.push(...sectionProblems(a && a.sections, scenario.expectSections, saved));
+    }
+    // ---- Contents column expectations ----
+    if (scenario.expectContents) problems.push(...contentsProblems(r.contents, scenario.expectContents, info.pages));
     if (scenario.samePagesAs) {
       const other = byName[scenario.samePagesAs];
       if (other && info.pages !== other.pdfPages) problems.push(`${info.pages} pages, expected the same as ${scenario.samePagesAs} (${other.pdfPages})`);

@@ -28,10 +28,17 @@
 
 .app.annotating .editor-pane { display: none; }
 
-/* The second selector outranks ".app.editor-hidden .main" in ui.css, which
-   would otherwise leave a single column when the editor was hidden first. */
+/* Three columns: notes list | contents | pages. The second selector outranks
+   ".app.editor-hidden .main" in ui.css, which would otherwise leave a single
+   column when the editor was hidden first. */
 .app.annotating .main,
 .app.annotating.editor-hidden .main {
+  grid-template-columns: minmax(230px, 22%) minmax(230px, 18%) minmax(0, 1fr);
+}
+/* The contents column can be switched off (the Contents button in the bar);
+   app.js then adds .toc-off and the pages get its room back. */
+.app.annotating.toc-off .main,
+.app.annotating.toc-off.editor-hidden .main {
   grid-template-columns: minmax(230px, 22%) minmax(0, 1fr);
 }
 
@@ -135,7 +142,80 @@
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
-.anno-pane .anno-pane-title { font-weight: 700; margin-bottom: 7px; }
+.anno-pane .anno-pane-title { font-weight: 700; }
+/* "Notes (7)" on the left, the "All notes" button (section view only) on the right. */
+.anno-pane .anno-pane-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+  margin-bottom: 7px;
+}
+.anno-pane button.anno-all {
+  margin-left: auto;
+  height: 22px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+/* The heading of the section that is open. */
+.anno-pane .anno-pane-section {
+  margin: -2px 0 8px;
+  font-weight: 600;
+  color: var(--accent-hover);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ---- The section note box (section view) -------------------------------------- */
+
+.anno-pane .anno-section-box {
+  padding: 10px 12px 9px;
+  border-bottom: 1px solid var(--border);
+  background: #fff;
+}
+.anno-pane .anno-section-label {
+  display: block; /* the app's own label rule lays labels out in a row */
+  margin-bottom: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.anno-pane .anno-section-text {
+  display: block;
+  width: 100%;
+  min-height: 84px;
+  max-height: 45vh; /* a very long note scrolls inside the box */
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+  line-height: 1.45;
+  resize: none; /* it grows with its text instead (ui.js) */
+  user-select: text; /* the pane around it switches selecting off */
+}
+.anno-pane .anno-section-text:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: var(--accent);
+}
+.anno-pane .anno-section-meta {
+  margin-top: 7px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* A section note in the list: a dark square instead of a label's coloured dot. */
+:is(.anno-pane, .anno-popover) .anno-dot.anno-dot-section {
+  border-radius: 2px;
+  border-color: var(--text);
+  background: var(--text);
+}
+.anno-pane .anno-item-section .anno-item-quote { font-weight: 600; color: var(--text); }
 
 .anno-pane .anno-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .anno-pane button.anno-chip {

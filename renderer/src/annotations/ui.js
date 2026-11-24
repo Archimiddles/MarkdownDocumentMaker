@@ -6,9 +6,11 @@
 // controller owns those) and it keeps no copy of the annotations: after every
 // change the controller calls us back and we redraw from what it reports.
 //
-//   bar      the third toolbar row: tools, label colours, undo, hide, export
+//   bar      the third toolbar row: tools, label colours, undo, hide, contents, export
 //   pop-up   the small menu beside a selection or a clicked mark
-//   notes    the list that takes the editor's place
+//   notes    the list that takes the editor's place, for the whole document
+//            or for one section with its section note box
+//            (the contents list beside it is built by contents.js)
 //   "+"      the button beside a block, for a note about the whole block
 //   keys     1-9 (one per label; there are five by default), U, S, N, Delete, Ctrl+Z, Esc
 //
@@ -16,6 +18,8 @@
 // again, so nothing here holds on to a page element between two events.
 
 import './ui.css';
+import { sectionRange } from './outline.js';
+import { MAX_NOTE as SECTION_NOTE_MAX } from './model.js';
 
 // `text` is what the button shows, `name` is what a screen reader says.
 const TOOLS = [
@@ -48,6 +52,11 @@ const ADD_GAP = 4; // space between the text column and the "+" button
 const ADD_LINGER = 350; // ms the "+" stays after the pointer leaves, so it can be reached
 
 const EMPTY_HINT = 'Select text on the page to highlight it or add a note.';
+const EMPTY_SECTION_HINT = 'No notes in this section yet. Select text on the page to highlight it or add a note.';
+const NO_SECTION_NOTES = 'No section notes yet. Click a heading in Contents, then write in the Section note box.';
+// Stands in for a label in the filter chips: "only my section notes". A
+// Symbol can never be mistaken for a label id from a file, which is a string.
+const SECTION_NOTES = Symbol('section notes');
 const UNPLACED_WHY = 'The text these notes were attached to is no longer in the document. '
   + 'They are kept and included at the end of the Markdown export.';
 const BUSY = 'The pages are still being laid out. Try again in a moment.';
@@ -90,6 +99,8 @@ function isTyping(target) {
     || Boolean(target.closest('input, textarea, select, [contenteditable]'));
 }
 
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
 function shorten(text, max) {
   const flat = String(text || '').replace(/\s+/g, ' ').trim();
   return flat.length > max ? `${flat.slice(0, max - 1).trimEnd()}…` : flat;
@@ -130,7 +141,8 @@ function overflowWarning(pages) {
 
 // anno     the annotation controller
 // els      { app, pages, scroll, inner, annoBar, annoPane, btnAnnotate }
-// actions  { isAnnotating, setAnnotateMode, isBusy, exportMarkdown, copyForLlm, setStatus }
+// actions  { isAnnotating, setAnnotateMode, isBusy, exportMarkdown, copyForLlm, setStatus,
+//            contentsShown, toggleContents }
 // Returns { refresh() }: call it whenever Annotate mode is switched on or off.
 export function initAnnotateUi({ anno, els, actions }) {
   // ---- Labels ---------------------------------------------------------------
@@ -268,6 +280,12 @@ export function initAnnotateUi({ anno, els, actions }) {
   const hideGroup = el('div', 'group');
   hideGroup.append(hideBtn);
 
+  // Shows or hides the contents column. It looks pressed while the column is shown.
+  const contentsBtn = button('anno-contents', 'Contents', '');
+  contentsBtn.dataset.act = 'contents';
+  const viewGroup = el('div', 'group');
+  viewGroup.append(contentsBtn);
+
   const exportBtn = button('', 'Export Markdown…', 'Save a copy of the Markdown with your notes written into it');
   exportBtn.dataset.act = 'export';
   const copyBtn = button('', 'Copy for LLM', 'Copy the Markdown with your notes to the clipboard');
@@ -277,7 +295,7 @@ export function initAnnotateUi({ anno, els, actions }) {
 
   els.annoBar.setAttribute('role', 'toolbar');
   els.annoBar.setAttribute('aria-label', 'Annotation tools');
-  els.annoBar.append(toolGroup, swatchGroup, historyGroup, hideGroup, exportGroup);
+  els.annoBar.append(toolGroup, swatchGroup, historyGroup, hideGroup, viewGroup, exportGroup);
 
   // A click on a button normally moves the keyboard focus to it and can drop
   // the text selection. Cancelling mousedown stops both; the click still happens.
@@ -292,6 +310,7 @@ export function initAnnotateUi({ anno, els, actions }) {
     else if (act === 'undo') { if (anno.canUndo() && ready()) anno.undo(); }
     else if (act === 'redo') { if (anno.canRedo() && ready()) anno.redo(); }
     else if (act === 'hide') anno.setHidden(!anno.hidden);
+    else if (act === 'contents') actions.toggleContents(); // app.js redraws the bar afterwards
     else if (act === 'export') run('Export', () => actions.exportMarkdown());
     else if (act === 'copy') run('Copy', () => actions.copyForLlm());
   });
@@ -314,6 +333,12 @@ export function initAnnotateUi({ anno, els, actions }) {
       : 'Hide every mark and note, for a clean printout';
     if (hideBtn.title !== hideTitle) hideBtn.title = hideTitle;
     setPressed(hideBtn, hidden);
+    const contents = Boolean(actions.contentsShown());
+    const contentsTitle = contents
+      ? 'Hide the contents list, to give the pages more room'
+      : 'Show the contents list: every heading, its page and how many notes it has';
+    if (contentsBtn.title !== contentsTitle) contentsBtn.title = contentsTitle;
+    setPressed(contentsBtn, contents);
   }
 
   // ---- The pop-up -------------------------------------------------------------
@@ -511,16 +536,43 @@ export function initAnnotateUi({ anno, els, actions }) {
   });
 
   // ---- The notes list ---------------------------------------------------------
+  //
+  // Two views. "All notes" lists everything. Clicking a heading in the contents
+  // list opens that one section: a box for your own note on the section (the
+  // "section note") and, under it, every note made inside the section,
+  // subsections included. anno.section says which view is showing.
 
-  let filter = null; // a label id, or null to list every note
+  let filter = null; // a label id, SECTION_NOTES, or null to list everything
   let chips = []; // [{ id (null = "All"), node, count }]
   let chipsLabelsKey = null;
   const rowCache = new Map(); // annotation id -> { node, state }
 
   const paneTitle = el('div', 'anno-pane-title');
+  const allBtn = button('anno-all', 'All notes', 'Back to the notes of the whole document');
+  allBtn.hidden = true;
+  const titleRow = el('div', 'anno-pane-top');
+  titleRow.append(paneTitle, allBtn);
+  const sectionName = el('div', 'anno-pane-section'); // the open section's heading
+  sectionName.hidden = true;
   const chipRow = el('div', 'anno-chips');
   const paneHead = el('div', 'anno-pane-head');
-  paneHead.append(paneTitle, chipRow);
+  paneHead.append(titleRow, sectionName, chipRow);
+
+  // The section note box. It is a plain text box: what is typed is saved when
+  // the box is left (and before anything that needs the notes to be complete).
+  const sectionLabel = el('label', 'anno-section-label', 'Section note');
+  const sectionText = el('textarea', 'anno-section-text');
+  sectionText.id = 'anno-section-text';
+  sectionLabel.htmlFor = sectionText.id;
+  sectionText.rows = 4;
+  sectionText.maxLength = SECTION_NOTE_MAX;
+  sectionText.spellcheck = true;
+  sectionText.placeholder = 'Your final notes on this section. Saved when you click away.';
+  const sectionMeta = el('div', 'anno-section-meta');
+  const sectionBox = el('div', 'anno-section-box');
+  sectionBox.append(sectionLabel, sectionText, sectionMeta);
+  sectionBox.hidden = true;
+
   const warnLine = el('p', 'anno-warn');
   const hintLine = el('p', 'anno-hint');
   const placedList = el('div', 'anno-list');
@@ -534,26 +586,33 @@ export function initAnnotateUi({ anno, els, actions }) {
   hintLine.hidden = true;
   unplacedBox.hidden = true;
   els.annoPane.setAttribute('aria-label', 'Notes');
-  els.annoPane.append(paneHead, warnLine, hintLine, placedList, unplacedBox);
+  els.annoPane.append(paneHead, warnLine, sectionBox, hintLine, placedList, unplacedBox);
 
+  // `label` is a label from the list, SECTION_NOTES, or null for "All".
   function makeChip(label) {
-    const node = button('anno-chip', '', label
-      ? `Show only ${label.name} notes (click again for all)`
-      : 'Show every note');
+    const sections = label === SECTION_NOTES;
+    const name = sections ? 'Section' : label ? label.name : 'All';
+    const node = button('anno-chip', '', sections
+      ? 'Show only your section notes (click again for all)'
+      : label ? `Show only ${label.name} notes (click again for all)` : 'Show every note');
     node.setAttribute('aria-pressed', 'false');
-    if (label) {
+    if (sections) {
+      node.append(el('span', 'anno-dot anno-dot-section'));
+    } else if (label) {
       const dot = el('span', 'anno-dot');
       tint(dot, label);
       node.append(dot);
     }
     const count = el('span', 'anno-chip-count', '0');
-    node.append(el('span', '', label ? label.name : 'All'), count);
-    return { id: label ? label.id : null, node, count };
+    node.append(el('span', '', name), count);
+    return { id: sections ? SECTION_NOTES : label ? label.id : null, node, count };
   }
 
   function buildRow(item, label) {
     const placed = item.status !== 'unplaced';
+    const section = item.kind === 'section';
     const row = el('div', placed ? 'anno-item' : 'anno-item anno-item-unplaced');
+    if (section) row.classList.add('anno-item-section');
     row.dataset.id = item.id;
     row.setAttribute('role', 'listitem');
     if (placed) row.tabIndex = 0; // reachable with Tab; Enter jumps to it on the page
@@ -564,23 +623,30 @@ export function initAnnotateUi({ anno, els, actions }) {
       num.title = 'The number on its margin card';
       head.append(num);
     }
-    const dot = el('span', 'anno-dot');
-    tint(dot, label);
-    head.append(dot, el('span', 'anno-item-label', label.name));
+    if (section) {
+      // No colour label: a section note is your summary, not a mark on the text.
+      head.append(el('span', 'anno-dot anno-dot-section'), el('span', 'anno-item-label', 'Section note'));
+    } else {
+      const dot = el('span', 'anno-dot');
+      tint(dot, label);
+      head.append(dot, el('span', 'anno-item-label', label.name));
+    }
     if (KIND_HINT[item.kind]) head.append(el('span', 'anno-item-kind', KIND_HINT[item.kind]));
 
     const end = el('span', 'anno-item-end');
     if (item.page !== null && item.page !== undefined) end.append(el('span', 'anno-item-page', `p. ${item.page}`));
-    const del = button('anno-item-del', '×', 'Delete this annotation');
-    del.setAttribute('aria-label', 'Delete this annotation');
+    const del = button('anno-item-del', '×', section ? 'Delete this section note' : 'Delete this annotation');
+    del.setAttribute('aria-label', del.title);
     end.append(del);
     head.append(end);
     row.append(head);
 
     const quote = shorten(item.exact, QUOTE_MAX);
-    if (quote) row.append(el('div', 'anno-item-quote', `“${quote}”`));
+    // For a section note the "quote" is the heading it belongs to.
+    if (quote) row.append(el('div', 'anno-item-quote', section ? quote : `“${quote}”`));
     const note = String(item.note || '').trim();
     if (note) row.append(el('div', 'anno-item-note', note)); // CSS clamps it to three lines
+    if (section && placed) row.title = 'Open this section: its note and every note inside it';
     return row;
   }
 
@@ -597,30 +663,136 @@ export function initAnnotateUi({ anno, els, actions }) {
     return node;
   }
 
+  // ---- The section note box ---------------------------------------------------
+
+  let boxSection = null; // the heading block the box belongs to, or null while it is hidden
+  let boxEpoch = 0; // which document that was (see anno.epoch)
+  let boxDirty = false; // the box holds typing that has not been handed over yet
+  // Typed text on its way into the notes: { block, text, epoch }, or null. It waits
+  // here when the controller cannot take a change (the pages are being
+  // rebuilt) and is tried again at the next refresh, so it is never lost.
+  let waiting = null;
+
+  // As tall as its text, up to the limit in ui.css (after that it scrolls).
+  function growSectionText() {
+    sectionText.style.height = 'auto';
+    sectionText.style.height = `${sectionText.scrollHeight + 2}px`;
+  }
+
+  function showSectionText(text) {
+    if (sectionText.value !== text) sectionText.value = text;
+    growSectionText();
+  }
+
+  // Hand what was typed to the controller. Safe to call at any time.
+  function saveSectionNote() {
+    if (boxDirty && boxSection !== null) {
+      waiting = { block: boxSection, text: sectionText.value, epoch: boxEpoch };
+      boxDirty = false;
+    }
+    // Typed for a document that has since been replaced: block numbers mean
+    // something else now, so it cannot be saved (the old document's notes
+    // were asked to save before it was replaced).
+    if (waiting && waiting.epoch !== anno.epoch) waiting = null;
+    if (!waiting) return;
+    const job = waiting;
+    waiting = null; // before the call: saving redraws this pane, which looks at `waiting`
+    if (!anno.setSectionNote(job.block, job.text)) waiting = job;
+  }
+
+  sectionText.addEventListener('input', () => {
+    boxDirty = true;
+    growSectionText();
+  });
+  sectionText.addEventListener('blur', saveSectionNote);
+  sectionText.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    e.stopPropagation(); // not also "close the pop-up" or "back to the Select tool"
+    sectionText.blur(); // which saves
+  });
+  // Exports, undo, a re-render and closing the window all need the notes to
+  // be complete: the controller asks before each of them.
+  anno.onCommitEdits(saveSectionNote);
+
+  // `row` is the open section's row from anno.outline(), or null in "All notes".
+  function drawSectionBox(row, inSection) {
+    if (!row) {
+      // The box is going away: whatever was typed in it must not go with it.
+      saveSectionNote();
+      boxSection = null;
+      sectionBox.hidden = true;
+      return;
+    }
+    if (boxSection !== row.block || boxEpoch !== anno.epoch) {
+      saveSectionNote();
+      boxSection = row.block;
+      boxEpoch = anno.epoch;
+    }
+    sectionBox.hidden = false; // before the text goes in: a hidden box cannot be measured
+    // Show what is stored, unless the box holds something newer.
+    if (!boxDirty) {
+      const own = anno.sectionNote(row.block);
+      const pending = waiting && waiting.block === row.block ? waiting.text : null;
+      showSectionText(pending !== null ? pending : (own ? own.note : ''));
+    }
+    const notes = inSection.filter((it) => it.kind !== 'section').length;
+    const below = inSection.length - notes; // section notes of its subsections
+    setText(sectionMeta, below
+      ? `${plural(notes, 'note')} and ${plural(below, 'section note')} in this section`
+      : `${plural(notes, 'note')} in this section`);
+  }
+
   function drawPane() {
-    const items = anno.items() || [];
+    // Typing that belongs to a section which is no longer the open one is
+    // handed over FIRST. Saving redraws this pane from inside, so it has to
+    // happen before anything below reads the notes.
+    if (boxSection !== null && (boxSection !== anno.section || boxEpoch !== anno.epoch)) saveSectionNote();
+
+    const all = anno.items() || [];
     const stats = anno.stats() || {};
     const overflow = stats.overflowPages || [];
+
+    // Which view: one section, or everything.
+    const outline = anno.outline();
+    const index = anno.section === null ? -1 : outline.rows.findIndex((row) => row.block === anno.section);
+    const sectionRow = index >= 0 ? outline.rows[index] : null;
+    const range = sectionRow ? sectionRange(outline.rows, index) : null;
+    const own = sectionRow ? anno.sectionNote(sectionRow.block) : null;
+    // The notes this view is about. In a section: everything that starts
+    // inside it, except its own section note (that one is in the box).
+    const items = sectionRow
+      ? all.filter((it) => it.block !== null && it.block >= range.from && it.block < range.to && !(own && it.id === own.id))
+      : all;
 
     const key = labelsKey();
     if (key !== chipsLabelsKey) {
       chipsLabelsKey = key;
-      chips = [makeChip(null), ...labels().map(makeChip)];
+      chips = [makeChip(null), ...labels().map(makeChip), makeChip(SECTION_NOTES)];
       chipRow.replaceChildren(...chips.map((c) => c.node));
     }
     // A filter on a label that no longer exists would hide everything.
-    if (filter !== null && !labels().some((l) => l.id === filter)) filter = null;
+    if (filter !== null && filter !== SECTION_NOTES && !labels().some((l) => l.id === filter)) filter = null;
 
-    const perLabel = new Map();
-    for (const it of items) perLabel.set(it.label, (perLabel.get(it.label) || 0) + 1);
+    // A section note has no colour label, so it is counted on the chip of its own.
+    const groupOf = (it) => (it.kind === 'section' ? SECTION_NOTES : it.label);
+    const perGroup = new Map();
+    for (const it of items) perGroup.set(groupOf(it), (perGroup.get(groupOf(it)) || 0) + 1);
     for (const chip of chips) {
-      setText(chip.count, String(chip.id === null ? items.length : perLabel.get(chip.id) || 0));
+      setText(chip.count, String(chip.id === null ? items.length : perGroup.get(chip.id) || 0));
       setPressed(chip.node, chip.id === filter);
     }
 
     setText(paneTitle, `Notes (${items.length})`);
+    allBtn.hidden = !sectionRow;
+    sectionName.hidden = !sectionRow;
+    if (sectionRow) {
+      setText(sectionName, sectionRow.title);
+      if (sectionName.title !== sectionRow.title) sectionName.title = sectionRow.title;
+    }
+    drawSectionBox(sectionRow, items);
 
-    const wanted = (it) => filter === null || it.label === filter;
+    const wanted = (it) => filter === null || groupOf(it) === filter;
     const placed = items.filter((it) => it.status !== 'unplaced');
     const unplaced = items.filter((it) => it.status === 'unplaced');
     const shownPlaced = placed.filter(wanted);
@@ -639,8 +811,8 @@ export function initAnnotateUi({ anno, els, actions }) {
       : `Unplaced (${shownUnplaced.length} of ${unplaced.length})`);
 
     let hint = '';
-    if (items.length === 0) hint = EMPTY_HINT;
-    else if (shown.size === 0) hint = 'No notes with this label.';
+    if (items.length === 0) hint = sectionRow ? EMPTY_SECTION_HINT : EMPTY_HINT;
+    else if (shown.size === 0) hint = filter === SECTION_NOTES ? NO_SECTION_NOTES : 'No notes with this label.';
     setText(hintLine, hint);
     hintLine.hidden = !hint;
 
@@ -651,8 +823,18 @@ export function initAnnotateUi({ anno, els, actions }) {
     warnLine.hidden = warnings.length === 0;
   }
 
+  // A click (or Enter) on a row: go to it on the page. A section note also
+  // opens its section here, which is how to get from "All notes" to the box.
+  function openRow(row) {
+    if (row.classList.contains('anno-item-unplaced')) return; // nowhere on the page to go to
+    const item = anno.get(row.dataset.id);
+    if (item && item.kind === 'section' && item.block !== null) anno.setSection(item.block);
+    anno.focus(row.dataset.id);
+  }
+
   // Keep the selection and the focus where they are, as in the bar. The bare
-  // pane is left alone so its scrollbar still works.
+  // pane is left alone so its scrollbar still works, and so is the section
+  // note box, which has to be clicked into.
   els.annoPane.addEventListener('mousedown', (e) => {
     if (closest(e.target, 'button, .anno-item')) e.preventDefault();
   });
@@ -660,6 +842,10 @@ export function initAnnotateUi({ anno, els, actions }) {
   els.annoPane.addEventListener('click', (e) => {
     const node = closest(e.target, 'button');
     if (node) {
+      if (node === allBtn) {
+        anno.setSection(null);
+        return;
+      }
       const chip = chips.find((c) => c.node === node);
       if (chip) {
         filter = chip.id === filter ? null : chip.id; // a second click on the same label shows all again
@@ -671,8 +857,7 @@ export function initAnnotateUi({ anno, els, actions }) {
       return;
     }
     const row = closest(e.target, '.anno-item');
-    // An unplaced note has nowhere on the page to jump to.
-    if (row && !row.classList.contains('anno-item-unplaced')) anno.focus(row.dataset.id);
+    if (row) openRow(row);
   });
 
   // Enter or Space on a row that has the keyboard focus does what a click does.
@@ -681,7 +866,7 @@ export function initAnnotateUi({ anno, els, actions }) {
     const row = e.target;
     if (!(row instanceof Element) || !row.classList.contains('anno-item')) return;
     e.preventDefault();
-    if (!row.classList.contains('anno-item-unplaced')) anno.focus(row.dataset.id);
+    openRow(row);
   });
 
   // ---- The "+" beside a block ---------------------------------------------------
@@ -942,6 +1127,9 @@ export function initAnnotateUi({ anno, els, actions }) {
     const on = Boolean(actions.isAnnotating());
     setPressed(els.btnAnnotate, on); // ui.css gives the pressed button its "on" look
     drawBar();
+    // A section note that could not be saved while the pages were being
+    // rebuilt is handed over as soon as they are done.
+    if (waiting && !actions.isBusy()) saveSectionNote();
     drawPane();
     syncPopover();
     if (!on || actions.isBusy()) hideAdd();

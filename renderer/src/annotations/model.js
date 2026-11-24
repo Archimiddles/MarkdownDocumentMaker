@@ -5,13 +5,18 @@
 // One annotation record:
 //   { id, kind, label, note, group?, target, created, modified }
 //   kind    'highlight' | 'underline' | 'strike' | 'block' (note on a block)
+//           | 'section' (your own note on a whole section; its block is the
+//           section's heading)
 //   target  { block, exact } plus, for the three text kinds,
 //           { start, end, prefix, suffix }. start/end count characters of the
 //           block's text with all whitespace removed.
 
 export const FORMAT = 'plan-printer-annotations';
-export const VERSION = 1;
-export const KINDS = ['highlight', 'underline', 'strike', 'block'];
+// The newest file version this app reads. Version 2 added section notes.
+export const VERSION = 2;
+export const KINDS = ['highlight', 'underline', 'strike', 'block', 'section'];
+// The kinds that belong to a whole block rather than to some of its words.
+export const WHOLE_BLOCK = new Set(['block', 'section']);
 
 // color = the highlighter colour, ink = a darker shade for text and borders.
 // `meaning` is written into the Markdown export so an LLM knows what each
@@ -88,7 +93,8 @@ function cleanAnnotation(raw) {
   if (typeof t.exact !== 'string') return null;
 
   const target = { block: t.block };
-  if (raw.kind !== 'block') {
+  const words = !WHOLE_BLOCK.has(raw.kind); // true for a note on some of a block's words
+  if (words) {
     // Text kinds must say which characters they cover.
     if (!Number.isInteger(t.start) || !Number.isInteger(t.end)) return null;
     if (t.start < 0 || t.end <= t.start) return null;
@@ -96,7 +102,7 @@ function cleanAnnotation(raw) {
     target.end = t.end;
   }
   target.exact = t.exact.slice(0, MAX_EXACT);
-  if (raw.kind !== 'block') {
+  if (words) {
     target.prefix = clampText(t.prefix, MAX_CONTEXT);
     target.suffix = clampText(t.suffix, MAX_CONTEXT);
   }
@@ -345,7 +351,11 @@ export function createStore() {
       const body = String(text ?? '');
       return {
         format: FORMAT,
-        version: VERSION,
+        // A file is marked version 2 only when it holds a section note. An
+        // older copy of the app does not know that kind and would silently
+        // drop it; seeing "version 2" it leaves the file alone instead. Every
+        // file without one stays readable by that older copy.
+        version: items.some((a) => a.kind === 'section') ? 2 : 1,
         document: { name: String(name ?? ''), hash: hashText(body), chars: body.length },
         labels: copyLabels(labels),
         annotations: items.map(copyRecord),

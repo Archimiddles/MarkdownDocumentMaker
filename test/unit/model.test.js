@@ -2,9 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  FORMAT, VERSION, KINDS, DEFAULT_LABELS,
+  FORMAT, VERSION, KINDS, WHOLE_BLOCK, DEFAULT_LABELS,
   newId, hashText, sanitizeSidecar, createStore,
 } from '../../renderer/src/annotations/model.js';
+// The main-process half of the same file format (it reads and writes the file).
+import mainStore from '../../annotations-store.js';
 
 // A well-formed text annotation; `over` replaces top-level fields.
 function record(id, over = {}) {
@@ -29,8 +31,9 @@ const ids = (store) => store.list().map((a) => a.id);
 
 test('constants describe the file format', () => {
   assert.equal(FORMAT, 'plan-printer-annotations');
-  assert.equal(VERSION, 1);
-  assert.deepEqual(KINDS, ['highlight', 'underline', 'strike', 'block']);
+  // The newest file version the app reads. Version 2 added section notes.
+  assert.equal(VERSION, 2);
+  assert.deepEqual(KINDS, ['highlight', 'underline', 'strike', 'block', 'section']);
   assert.deepEqual(DEFAULT_LABELS.map((l) => l.id),
     ['note', 'question', 'change', 'keep', 'important']);
   for (const l of DEFAULT_LABELS) {
@@ -533,4 +536,244 @@ test('updateMany changes several records as one undo step', () => {
   assert.deepEqual(store.list().map((a) => a.label), ['question', 'question', 'question']);
   // A patch that changes nothing is not a step.
   assert.equal(store.updateMany(['p1'], () => ({ label: 'question' })), false);
+});
+
+// ---- Section notes --------------------------------------------------------------
+// A section note is the reviewer's own note on a whole section. It is stored
+// like a note on a block: the block is the section's heading, and `exact` is
+// that heading as written in the Markdown ("## Risks").
+
+// A well-formed section note; `over` replaces top-level fields.
+function sectionRecord(id, over = {}) {
+  return {
+    id,
+    kind: 'section',
+    label: 'note',
+    note: `summary for ${id}`,
+    target: { block: 4, exact: '## Risks' },
+    created: '2026-11-16T10:00:00.000Z',
+    modified: '2026-11-16T10:00:00.000Z',
+    ...over,
+  };
+}
+
+// The version number the store would write to disk right now.
+const versionOf = (store) => store.toSidecar({ name: 'plan.md', text: '' }).version;
+
+test('the whole-block kinds are "block" and "section"', () => {
+  assert.ok(WHOLE_BLOCK instanceof Set);
+  assert.deepEqual([...WHOLE_BLOCK].sort(), ['block', 'section']);
+  // Both are kinds the app knows, and the three text kinds are not among them.
+  for (const kind of WHOLE_BLOCK) assert.ok(KINDS.includes(kind), kind);
+  assert.deepEqual(KINDS.filter((kind) => !WHOLE_BLOCK.has(kind)),
+    ['highlight', 'underline', 'strike']);
+});
+
+test('the page and the main process agree on the file format and its newest version', () => {
+  // The page builds the file (model.js) and the main process checks it before
+  // writing (annotations-store.js). If the two numbers drifted apart, a file
+  // with a section note could be built but never saved.
+  assert.equal(mainStore.FORMAT, FORMAT);
+  assert.equal(mainStore.VERSION, VERSION);
+});
+
+test('a section note read from a file keeps only block and exact in its target', () => {
+  const clean = sanitizeSidecar(sidecar({ annotations: [sectionRecord('s1')] }));
+  assert.deepEqual(clean.annotations, [sectionRecord('s1')]);
+  // No offsets and no context are added: it is about the whole section.
+  assert.deepEqual(Object.keys(clean.annotations[0].target), ['block', 'exact']);
+
+  // Missing label and note get their defaults, as for any other record.
+  const bare = sanitizeSidecar(sidecar({
+    annotations: [{ id: 's2', kind: 'section', target: { block: 0, exact: '# Title' } }],
+  }));
+  assert.deepEqual(bare.annotations, [
+    { id: 's2', kind: 'section', label: 'note', note: '', target: { block: 0, exact: '# Title' } },
+  ]);
+});
+
+test('stray offsets on a section note are dropped, the same as on a block note', () => {
+  // start, end, prefix and suffix belong to notes on some of a block's words.
+  const stray = {
+    block: 4, exact: '## Risks', start: 3, end: 9, prefix: 'before ', suffix: ' after', extra: 'x',
+  };
+  const clean = sanitizeSidecar(sidecar({
+    annotations: [
+      sectionRecord('section', { target: { ...stray } }),
+      sectionRecord('block', { kind: 'block', target: { ...stray } }),
+      // Offsets that would get a highlight thrown out do no harm here: they
+      // are not looked at.
+      sectionRecord('nonsense', { target: { block: 4, exact: '## Risks', start: -5, end: 'x' } }),
+    ],
+  }));
+  assert.deepEqual(clean.annotations.map((a) => a.id), ['section', 'block', 'nonsense']);
+  for (const a of clean.annotations) {
+    assert.deepEqual(a.target, { block: 4, exact: '## Risks' }, a.id);
+  }
+  // The same stray fields on a highlight are kept: there they mean something.
+  const highlight = sanitizeSidecar(sidecar({
+    annotations: [record('h', { target: { ...stray } })],
+  })).annotations[0];
+  assert.deepEqual(highlight.target, {
+    block: 4, start: 3, end: 9, exact: '## Risks', prefix: 'before ', suffix: ' after',
+  });
+});
+
+test('a section note keeps a sensible "2nd of 3 copies" record', () => {
+  // Two sections may have the same heading ("### Notes" under each part).
+  const t = (occurrence) => ({ block: 4, exact: '### Notes', occurrence });
+  const clean = sanitizeSidecar(sidecar({
+    annotations: [
+      sectionRecord('good', { target: t({ nth: 1, of: 3 }) }),
+      sectionRecord('bad1', { target: t({ nth: 3, of: 3 }) }), // there is no 4th of 3
+      sectionRecord('bad2', { target: t('second') }),
+    ],
+  }));
+  assert.deepEqual(clean.annotations.map((a) => a.target), [
+    { block: 4, exact: '### Notes', occurrence: { nth: 1, of: 3 } },
+    { block: 4, exact: '### Notes' },
+    { block: 4, exact: '### Notes' },
+  ]);
+});
+
+test('a section note with no usable block or heading text is dropped', () => {
+  const clean = sanitizeSidecar(sidecar({
+    annotations: [
+      sectionRecord('no-target', { target: undefined }),
+      sectionRecord('no-block', { target: { exact: '## Risks' } }),
+      sectionRecord('negative-block', { target: { block: -1, exact: '## Risks' } }),
+      sectionRecord('fraction-block', { target: { block: 1.5, exact: '## Risks' } }),
+      sectionRecord('text-block', { target: { block: '4', exact: '## Risks' } }),
+      sectionRecord('no-exact', { target: { block: 4 } }),
+      sectionRecord('number-exact', { target: { block: 4, exact: 7 } }),
+      sectionRecord('null-exact', { target: { block: 4, exact: null } }),
+      sectionRecord('good'),
+      // Block 0 is a real block: the document's title is usually there.
+      sectionRecord('on-the-title', { target: { block: 0, exact: '# Title' } }),
+    ],
+  }));
+  assert.deepEqual(clean.annotations.map((a) => a.id), ['good', 'on-the-title']);
+});
+
+test('sanitizeSidecar reads version 1 and version 2 files and refuses version 3', () => {
+  // Version 1: written before section notes existed (or by a file without one).
+  const v1 = sanitizeSidecar(sidecar({ version: 1 }));
+  assert.deepEqual(v1.annotations, [record('a')]);
+
+  // Version 2: may hold section notes next to everything version 1 had.
+  const v2 = sanitizeSidecar(sidecar({
+    version: 2, annotations: [record('a'), sectionRecord('s1')],
+  }));
+  assert.deepEqual(v2.annotations, [record('a'), sectionRecord('s1')]);
+  assert.notEqual(sanitizeSidecar(sidecar({ version: 2, annotations: [] })), null);
+
+  // Version 3 would come from a newer copy of the app: hands off.
+  assert.equal(sanitizeSidecar(sidecar({ version: 3 })), null);
+  assert.equal(sanitizeSidecar(sidecar({ version: 3, annotations: [] })), null);
+});
+
+test('toSidecar writes version 1 without a section note and version 2 with one', () => {
+  const store = createStore();
+  assert.equal(versionOf(store), 1); // nothing at all
+
+  // Every kind an older copy of the app already knows: still version 1, so
+  // that older copy can keep reading the file.
+  store.add([
+    record('h'),
+    record('u', { kind: 'underline' }),
+    record('s', { kind: 'strike' }),
+    { id: 'b', kind: 'block', target: { block: 3, exact: '| Setting | Default |' } },
+  ]);
+  assert.equal(versionOf(store), 1);
+
+  store.add(sectionRecord('s1'));
+  assert.equal(versionOf(store), 2);
+  // Never a number this copy of the app could not read back itself.
+  assert.ok(versionOf(store) <= VERSION);
+
+  // A second one changes nothing, and one of the two is enough for version 2.
+  store.add(sectionRecord('s2', { target: { block: 9, exact: '## Open questions' } }));
+  assert.equal(versionOf(store), 2);
+  store.remove('s2');
+  assert.equal(versionOf(store), 2);
+});
+
+test('the file goes back to version 1 once the section note is gone', () => {
+  const store = createStore();
+  store.add(record('a'));
+  store.add(sectionRecord('s1'));
+  assert.equal(versionOf(store), 2);
+
+  // Undo the add: the note is gone again.
+  store.undo();
+  assert.deepEqual(ids(store), ['a']);
+  assert.equal(versionOf(store), 1);
+  store.redo();
+  assert.equal(versionOf(store), 2);
+
+  // Remove it (what the app does when the section note box is emptied).
+  assert.equal(store.remove('s1'), 1);
+  assert.deepEqual(ids(store), ['a']);
+  assert.equal(versionOf(store), 1);
+
+  // Undo the removal: the note is back, and so is version 2.
+  store.undo();
+  assert.deepEqual(ids(store), ['a', 's1']);
+  assert.equal(versionOf(store), 2);
+
+  // Opening a document that has none starts again at version 1.
+  store.load(sanitizeSidecar(sidecar({ version: 1 })));
+  assert.equal(versionOf(store), 1);
+});
+
+test('a file with section notes gives the same records back after a save and reload', () => {
+  const store = createStore();
+  store.add([
+    record('a'),
+    sectionRecord('s1'),
+    sectionRecord('s2', {
+      note: 'Line one\nLine two',
+      target: { block: 9, exact: '### Notes', occurrence: { nth: 0, of: 2 } },
+    }),
+  ]);
+  const onDisk = JSON.parse(JSON.stringify(store.toSidecar({ name: 'plan.md', text: 'abc' })));
+  assert.equal(onDisk.version, 2);
+  // The main process would let this file through to disk.
+  assert.equal(mainStore.validateSidecar(onDisk), true);
+
+  const clean = sanitizeSidecar(onDisk);
+  assert.deepEqual(clean.annotations, store.list());
+
+  const reopened = createStore();
+  reopened.load(clean);
+  assert.deepEqual(reopened.list(), store.list());
+  assert.equal(versionOf(reopened), 2); // the section notes are still in it
+});
+
+test('update can change the text of a section note', () => {
+  const store = createStore();
+  store.add(sectionRecord('s1'));
+  const reasons = [];
+  store.subscribe((r) => reasons.push(r));
+
+  const updated = store.update('s1', { note: 'Rewritten summary' });
+  assert.equal(updated.note, 'Rewritten summary');
+  // Everything else about the record stays as it was.
+  assert.equal(updated.kind, 'section');
+  assert.equal(updated.label, 'note');
+  assert.deepEqual(updated.target, { block: 4, exact: '## Risks' });
+  assert.equal(updated.created, '2026-11-16T10:00:00.000Z');
+  assert.notEqual(updated.modified, '2026-11-16T10:00:00.000Z');
+  assert.deepEqual(store.get('s1'), updated);
+  assert.deepEqual(reasons, ['update']);
+
+  // The same text again is not a change, so there is nothing new to undo.
+  // (The app saves the section note box every time you click away from it.)
+  assert.deepEqual(store.update('s1', { note: 'Rewritten summary' }), updated);
+  assert.deepEqual(reasons, ['update']);
+
+  // One undo brings the old text back. The note is still there: version 2.
+  store.undo();
+  assert.deepEqual(store.get('s1'), sectionRecord('s1'));
+  assert.equal(versionOf(store), 2);
 });

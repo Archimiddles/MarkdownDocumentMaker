@@ -27,6 +27,7 @@ import './ui.css';
 import { renderBlocks } from './annotations/blocks.js';
 import { createAnnotations, readCachedAnnotations } from './annotations/index.js';
 import { initAnnotateUi } from './annotations/ui.js';
+import { initContents } from './annotations/contents.js';
 
 // ---- Configuration ----------------------------------------------------------
 
@@ -83,6 +84,7 @@ const DEFAULTS = {
   title: '',
   date: '',
   editorVisible: true,
+  contentsVisible: true, // the contents column in Annotate mode
 };
 
 const STORAGE_SETTINGS = 'planPrinter.settings.v1';
@@ -119,6 +121,7 @@ const els = {
   btnAnnotate: $('btn-annotate'),
   annoBar: $('anno-bar'),
   annoPane: $('anno-pane'),
+  annoToc: $('anno-toc'),
 };
 
 const api = window.planPrinter;
@@ -155,6 +158,7 @@ function sanitizeSettings(raw) {
   pick('zoom', ZOOMS);
   if (typeof raw.breakH2 === 'boolean') s.breakH2 = raw.breakH2;
   if (typeof raw.editorVisible === 'boolean') s.editorVisible = raw.editorVisible;
+  if (typeof raw.contentsVisible === 'boolean') s.contentsVisible = raw.contentsVisible;
   if (typeof raw.title === 'string') s.title = raw.title.slice(0, 200);
   if (typeof raw.date === 'string') s.date = raw.date.slice(0, 60);
   return s;
@@ -627,6 +631,11 @@ let pending = false;
 let renderTimer = null;
 let renderScheduled = false;
 
+// The annotate controls (bar, pop-up, notes list) and the contents column.
+// Both are created in init(); until then there is nothing to redraw.
+let annotateUi = null;
+let contentsUi = null;
+
 function currentFurniture(root) {
   const s = state.settings;
   state.autoTitle = detectTitle(root);
@@ -706,6 +715,10 @@ async function render() {
   } finally {
     rendering = false;
     updateStatusRight();
+    // The headings and their page numbers are known again, and a section
+    // note that was typed while the pages were being rebuilt can be saved.
+    if (contentsUi) contentsUi.refresh();
+    if (annotateUi) annotateUi.refresh();
     if (pending) {
       pending = false;
       render();
@@ -853,6 +866,9 @@ function syncControls() {
   els.btnToggleEditor.textContent = s.editorVisible ? 'Hide editor' : 'Show editor';
   // In Annotate mode the notes list takes the editor's place.
   els.btnToggleEditor.disabled = state.annotate;
+  // The contents column exists in Annotate mode only, and can be switched off there.
+  els.app.classList.toggle('toc-off', !s.contentsVisible);
+  els.annoToc.hidden = !(state.annotate && s.contentsVisible);
 }
 
 function setStatus(text, isError = false) {
@@ -867,7 +883,8 @@ function updateStatusRight() {
     : (g.notesH > 0 ? `${g.notesH} in notes box` : 'no notes box');
   // Margin cards only have room in the Margin notes layout; say so rather
   // than let typed notes silently disappear in the other layouts.
-  const typed = g.layout.marginColumn ? 0 : anno.items().filter((it) => it.note).length;
+  // (A section note is never a margin card, so it is not one of these.)
+  const typed = g.layout.marginColumn ? 0 : anno.items().filter((it) => it.note && it.kind !== 'section').length;
   let hiddenNotes = typed ? ` · ${typed} typed note${typed === 1 ? '' : 's'} hidden (shown in the Margin notes layout)` : '';
   // A page with more notes than its margin holds shows them shortened.
   const crowded = anno.stats().overflowPages;
@@ -992,6 +1009,7 @@ function setAnnotateMode(on) {
   syncControls();
   updateStatusRight();
   applyZoom(); // the preview's width just changed
+  if (contentsUi) contentsUi.refresh(); // it is not kept up to date while hidden
   setStatus(on
     ? 'Annotate mode: select text to highlight it or add a note. The Markdown is locked while this is on.'
     : `${state.pageCount} page${state.pageCount === 1 ? '' : 's'}`);
@@ -1074,6 +1092,17 @@ function toggleEditor() {
   saveSettings();
   syncControls();
   applyZoom();
+}
+
+// Show or hide the contents column. The choice is remembered, but the column
+// itself only ever appears in Annotate mode.
+function setContentsVisible(on) {
+  state.settings.contentsVisible = Boolean(on);
+  saveSettings();
+  syncControls();
+  applyZoom(); // the preview's width just changed
+  if (contentsUi) contentsUi.refresh();
+  if (annotateUi) annotateUi.refresh(); // the Contents button in the bar
 }
 
 async function init() {
@@ -1175,7 +1204,7 @@ async function init() {
   });
 
   // The annotate tool bar, pop-up menu, notes list and shortcuts.
-  const annotateUi = initAnnotateUi({
+  annotateUi = initAnnotateUi({
     anno,
     els: {
       app: els.app,
@@ -1192,6 +1221,19 @@ async function init() {
       isBusy: () => renderOutstanding(),
       exportMarkdown: doExportAnnotatedMd,
       copyForLlm: doCopyForLlm,
+      setStatus,
+      contentsShown: () => state.settings.contentsVisible,
+      toggleContents: () => setContentsVisible(!state.settings.contentsVisible),
+    },
+  });
+  // The contents column: headings, page numbers and note counts.
+  contentsUi = initContents({
+    anno,
+    els: { pane: els.annoToc, pages: els.pages, scroll: els.scroll },
+    actions: {
+      isShown: () => state.annotate && state.settings.contentsVisible,
+      isBusy: () => renderOutstanding(),
+      hide: () => setContentsVisible(false),
       setStatus,
     },
   });
@@ -1362,6 +1404,103 @@ async function init() {
     }).length,
     setAnnotateMode: (on) => setAnnotateMode(Boolean(on)),
     setAnnotationsHidden: (on) => anno.setHidden(on),
+    // The contents column: what it should list (rows, notes) and what is
+    // really on screen (shown, drawn, counts, pages, current).
+    contents() {
+      const rowEls = Array.from(els.annoToc.querySelectorAll('.anno-toc-row'));
+      const text = (row, cls) => { const part = row.querySelector(cls); return part ? part.textContent : ''; };
+      return {
+        ...anno.outline(),
+        shown: !els.annoToc.hidden && els.annoToc.offsetWidth > 0,
+        drawn: rowEls.map((row) => text(row, '.anno-toc-text')),
+        counts: rowEls.map((row) => Number(text(row, '.anno-toc-count') || 0)),
+        pages: rowEls.map((row) => Number(text(row, '.anno-toc-page') || 0)),
+        current: rowEls.findIndex((row) => row.hasAttribute('aria-current')),
+        summary: text(els.annoToc, '.anno-toc-sub'),
+        // Which rows carry the "has a section note" tick, and whose notes are open.
+        ticks: rowEls.map((row) => Boolean(row.querySelector('.anno-toc-noted'))),
+        open: rowEls.findIndex((row) => row.classList.contains('anno-toc-open')),
+      };
+    },
+    // What the notes pane shows right now, read from the screen.
+    notesPane() {
+      const pane = els.annoPane;
+      const text = (root, cls) => { const part = root.querySelector(cls); return part ? part.textContent : ''; };
+      const seen = (cls) => { const part = pane.querySelector(cls); return Boolean(part && !part.hidden); };
+      const box = pane.querySelector('.anno-section-text');
+      const chips = {};
+      for (const chip of pane.querySelectorAll('.anno-chip')) {
+        chips[chip.querySelector('span:not(.anno-dot):not(.anno-chip-count)').textContent] = Number(text(chip, '.anno-chip-count'));
+      }
+      return {
+        title: text(pane, '.anno-pane-title'),
+        section: seen('.anno-pane-section') ? text(pane, '.anno-pane-section') : null,
+        allButton: seen('.anno-all'),
+        box: seen('.anno-section-box'),
+        boxText: box ? box.value : '',
+        meta: text(pane, '.anno-section-meta'),
+        chips,
+        rows: Array.from(pane.querySelectorAll('.anno-item')).map((row) => ({
+          label: text(row, '.anno-item-label'),
+          quote: text(row, '.anno-item-quote'),
+          note: text(row, '.anno-item-note'),
+          sectionNote: row.classList.contains('anno-item-section'),
+          unplaced: row.classList.contains('anno-item-unplaced'),
+        })),
+      };
+    },
+    // Type into the section note box the way a user does: click into it,
+    // type, click away (which is what saves it).
+    async typeSectionNote(text) {
+      const box = els.annoPane.querySelector('.anno-section-text');
+      if (!box || box.closest('[hidden]')) return null;
+      if (renderOutstanding()) await renderNow();
+      box.focus();
+      box.value = text;
+      box.dispatchEvent(new Event('input', { bubbles: true }));
+      box.blur();
+      // The test window is shown without the keyboard focus (see main.js), and
+      // a page that does not have the focus is not sent real blur events.
+      box.dispatchEvent(new FocusEvent('blur'));
+      return this.notesPane();
+    },
+    // The "All notes" button.
+    showAllNotes() {
+      const button = els.annoPane.querySelector('.anno-all');
+      if (button && !button.hidden) button.click();
+      return this.notesPane();
+    },
+    setContentsVisible: (on) => setContentsVisible(Boolean(on)),
+    // Click row `index` of the contents list the way a user does, wait for the
+    // page to stop moving, and report where that heading ended up.
+    async jumpToSection(index) {
+      const row = els.annoToc.querySelectorAll('.anno-toc-row')[index];
+      const wanted = anno.outline().rows[index];
+      if (!row || !wanted) return null;
+      const heading = els.pages.querySelector(`[data-block="${wanted.block}"]`);
+      // The heading flashes when the page has arrived (see contents.js), so
+      // that is what to wait for. A flash left over from an earlier click on
+      // the same row must not be mistaken for this one.
+      if (heading) heading.classList.remove('anno-flash');
+      const flashing = () => Boolean(heading && heading.classList.contains('anno-flash'));
+      row.click();
+      for (let waited = 0; !flashing() && waited < 3000; waited += 25) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      const flashed = flashing();
+      const view = els.scroll.getBoundingClientRect();
+      const rows = Array.from(els.annoToc.querySelectorAll('.anno-toc-row'));
+      return {
+        // How far below the top of the view the heading sits, in screen pixels.
+        offset: heading ? Math.round(heading.getBoundingClientRect().top - view.top) : null,
+        viewHeight: Math.round(view.height),
+        atEnd: els.scroll.scrollTop + els.scroll.clientHeight >= els.scroll.scrollHeight - 2,
+        scrollTop: els.scroll.scrollTop,
+        scrollMax: els.scroll.scrollHeight - els.scroll.clientHeight,
+        current: rows.findIndex((r) => r.hasAttribute('aria-current')),
+        flashed,
+      };
+    },
     annotationStats: () => anno.stats(),
     annotationItems: () => anno.items(),
     annotatedMarkdown: () => anno.exportMarkdown(),

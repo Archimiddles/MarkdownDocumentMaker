@@ -10,7 +10,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const FORMAT = 'plan-printer-annotations';
-const VERSION = 1;
+const VERSION = 2; // the newest file version this app reads (2 added section notes; see model.js)
 
 const DOC_EXT = new Set(['.md', '.markdown', '.txt']);
 const MAX_BYTES = 5 * 1024 * 1024; // a notes file is never this big
