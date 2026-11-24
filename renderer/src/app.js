@@ -558,6 +558,67 @@ class FurnitureHandler extends Handler {
 }
 registerHandlers(FurnitureHandler); // once, at module load
 
+// ---- Page layout handler --------------------------------------------------------
+
+// Two things Paged.js needs from this app while it fills a page.
+class LayoutHandler extends Handler {
+  constructor(chunker, polisher, caller) {
+    super(chunker, polisher, caller);
+  }
+
+  // Paged.js is about to fill one page, and has just finished it. A page is
+  // always measured at 100% zoom, whatever the preview shows: see pauseZoom().
+  beforePageLayout() {
+    pauseZoom();
+  }
+
+  afterPageLayout() {
+    resumeZoom();
+  }
+
+  // Paged.js has looked for the first thing that does not fit on the page.
+  // `overflow` is a DOM Range from that point to the end of what it put on
+  // the page (`rendered`), or undefined when everything fits. Returning a
+  // Range replaces the one Paged.js found.
+  onOverflow(overflow, rendered) {
+    return keepDiagramWhole(overflow, rendered);
+  }
+}
+registerHandlers(LayoutHandler); // once, at module load
+
+// A page break must never land inside a diagram. Mermaid colours a diagram
+// with CSS that only matches the <svg>'s own id. When Paged.js breaks a page
+// in the middle of an <svg>, it continues the rest on the next page under a
+// copy of that <svg> without the id (an id may appear only once), so nothing
+// there is styled any more and every shape prints solid black.
+// If the page overflows from a point inside a diagram, move that point to
+// just before the diagram: the whole diagram then goes to the next page.
+function keepDiagramWhole(overflow, rendered) {
+  if (!overflow) return undefined; // everything fits: nothing to change
+  const start = overflow.startContainer;
+  const el = start.nodeType === Node.ELEMENT_NODE ? start : start.parentElement;
+  const figure = el && el.closest('.mermaid-diagram');
+  if (!figure || !rendered.contains(figure)) return undefined;
+  // Only when something comes before the diagram on this page. A diagram
+  // that is first on its page and still does not fit is taller than a page
+  // (fitSvg normally prevents that); sending it on would get the same page
+  // again, so that case is left to Paged.js as before.
+  if (!hasContentBefore(figure, rendered)) return undefined;
+  overflow.setStartBefore(figure);
+  return overflow;
+}
+
+// True when some text or element comes before `node` inside `root`, that is,
+// when `node` is not the first thing on its page.
+function hasContentBefore(node, root) {
+  for (let n = node; n && n !== root; n = n.parentNode) {
+    for (let prev = n.previousSibling; prev; prev = prev.previousSibling) {
+      if (prev.nodeType === Node.ELEMENT_NODE || prev.textContent.trim()) return true;
+    }
+  }
+  return false;
+}
+
 // ---- Rendering --------------------------------------------------------------------
 
 let previewer = null;
@@ -639,6 +700,7 @@ async function render() {
     else setStatus(rendered);
   } catch (err) {
     console.error(err);
+    resumeZoom(); // the render may have stopped half way through a page
     state.lastError = err;
     setStatus(`Render error: ${err && err.message ? err.message : err}`, true);
   } finally {
@@ -687,7 +749,53 @@ function refreshHeaders() {
 
 // ---- Zoom ---------------------------------------------------------------------------
 
+// The zoom is a CSS transform on #pages. It scales the finished pages on
+// screen and changes nothing about their layout. But it stays on #pages while
+// the next render is laid out, and there it does harm: Paged.js measures the
+// page it is filling in screen pixels (getBoundingClientRect), which a
+// transform scales, and compares them with CSS lengths, which a transform
+// does not scale. Zoomed out below about 91 to 95% (it depends on the page
+// margins) Paged.js no longer notices where a page is full. Text then drops
+// off the bottom of pages without a trace, and a diagram that should move to
+// the next page whole is cut in two.
+// So the zoom is set to 100% while Paged.js fills a page and put straight
+// back afterwards. Both happen before the browser draws its next frame, so
+// the preview does not visibly change size. (The one exception: a page that
+// has to wait for a picture that is still loading shows at 100% meanwhile.)
+let zoomPaused = false;
+let pausedTransform = '';
+let zoomChangedWhilePaused = false;
+// Tests only (set through the test hook's apply): leave the zoom on during
+// layout, as the app used to, to prove that keepDiagramWhole() protects a
+// diagram even then.
+let layoutUnderZoomForTest = false;
+
+function pauseZoom() {
+  if (zoomPaused || layoutUnderZoomForTest) return;
+  zoomPaused = true;
+  pausedTransform = els.pages.style.transform;
+  // "scale(1)" rather than no transform at all: both measure the same, but
+  // switching a transform off and on makes the browser lay every finished
+  // page out again (once per page), while changing its number costs nothing.
+  if (pausedTransform) els.pages.style.transform = 'scale(1)';
+}
+
+function resumeZoom() {
+  if (!zoomPaused) return;
+  zoomPaused = false;
+  els.pages.style.transform = pausedTransform;
+  // A zoom change that arrived in the meantime was held back; apply it now.
+  if (zoomChangedWhilePaused) {
+    zoomChangedWhilePaused = false;
+    applyZoom();
+  }
+}
+
 function applyZoom() {
+  if (zoomPaused) {
+    zoomChangedWhilePaused = true;
+    return;
+  }
   const pagesEl = els.pages.querySelector('.pagedjs_pages');
   if (!pagesEl) return;
   els.pages.style.transform = '';
@@ -1147,7 +1255,12 @@ async function init() {
       anno.setHidden(false);
       state.doc = { name: '', hasFile: false, id: '' };
       anno.load(null);
-      Object.assign(state.settings, settings || {});
+      // layoutUnderZoom is not a setting. It lays the pages out with the
+      // zoom still on them, as the app used to (see pauseZoom), for the one
+      // scenario that checks a diagram stays whole even then.
+      const { layoutUnderZoom = false, ...appSettings } = settings || {};
+      layoutUnderZoomForTest = Boolean(layoutUnderZoom);
+      Object.assign(state.settings, appSettings);
       syncControls();
       if (typeof markdown === 'string') els.editor.value = markdown;
       await renderNow();
@@ -1254,6 +1367,54 @@ async function init() {
     annotatedMarkdown: () => anno.exportMarkdown(),
     sidecar: () => anno.toSidecar(),
     pageCount: () => state.pageCount,
+    // Pick a zoom the way the Zoom menu does: the finished pages are scaled,
+    // nothing is laid out again. Returns the scale that is now on the pages
+    // (and that stays there while the next render is laid out).
+    setZoom(zoom) {
+      state.settings.zoom = String(zoom);
+      syncControls();
+      applyZoom();
+      return els.pages.style.transform;
+    },
+    // One entry per Mermaid diagram found on the pages, for checking that a
+    // page break never tears a diagram apart or costs it its colours.
+    diagramsOnPages() {
+      const pageEls = Array.from(els.pages.querySelectorAll('.pagedjs_page'));
+      const figures = Array.from(els.pages.querySelectorAll('.mermaid-diagram')).map((figure) => {
+        const page = figure.closest('.pagedjs_page');
+        const svgs = figure.querySelectorAll('svg');
+        const svg = svgs[0];
+        const style = svg && svg.querySelector('style');
+        // A box Mermaid always fills with a light colour: a flowchart, state
+        // or class node, or an actor of a sequence diagram.
+        const nodeBox = svg && svg.querySelector('g.node rect, rect.actor');
+        // Paged.js pushes whatever does not fit on a page sideways, out of
+        // sight. A diagram is really on its page only when its box lies
+        // inside that page's text area.
+        const area = page.querySelector('.pagedjs_page_content').getBoundingClientRect();
+        const box = figure.getBoundingClientRect();
+        return {
+          page: pageEls.indexOf(page) + 1,
+          // Paged.js gives every element of the document one ref. Two
+          // figures with the same ref are two pieces of one diagram.
+          ref: figure.dataset.ref || '',
+          piece: figure.hasAttribute('data-split-from') || Boolean(svg && svg.hasAttribute('data-split-from')),
+          svgs: svgs.length,
+          id: svg ? svg.id : '',
+          styles: svg ? svg.querySelectorAll('style').length : 0,
+          // Mermaid writes every rule of a diagram's CSS as "#<svg id> ...".
+          // The rules only apply while the <svg> still carries that id.
+          cssMatchesId: Boolean(svg && svg.id && style && style.textContent.includes(`#${svg.id}`)),
+          shapes: svg ? svg.querySelectorAll('rect, circle, ellipse, polygon, path, line, text').length : 0,
+          // What that CSS should have painted. Without it a box falls back
+          // to the SVG default, solid black: rgb(0, 0, 0).
+          nodeFill: nodeBox ? getComputedStyle(nodeBox).fill : '',
+          onPage: box.height > 0 && box.left >= area.left - 1 && box.right <= area.right + 1
+            && box.top >= area.top - 1 && box.bottom <= area.bottom + 1,
+        };
+      });
+      return { rendered: state.diagramStats.rendered, figures };
+    },
     // Where every line of text sits on the pages (in page pixels, so zoom and
     // scrolling do not matter), for checking that annotations move nothing.
     lineBoxes() {

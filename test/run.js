@@ -5,6 +5,8 @@
 //   - the PDF page count equals the page count Paged.js showed in the preview
 //   - the PDF page size matches the selected paper
 //   - scenario-specific expectations (minimum pages, H2 breaks add pages, ...)
+//   - every Mermaid diagram is on its page in one piece and keeps its colours,
+//     and the preview zoom never changes where pages break or what they hold
 //   - annotation scenarios: notes attach, no line of text moves, margin notes
 //     are real text in the PDF (pdftotext), the Markdown export matches
 // Usage: node test/run.js [--no-sandbox]
@@ -23,6 +25,9 @@ fs.mkdirSync(out, { recursive: true });
 const sample = path.join(root, 'samples', 'sample-plan.md');
 const edge = path.join(__dirname, 'fixtures', 'edge-cases.md');
 const mermaidDoc = path.join(__dirname, 'fixtures', 'mermaid.md');
+// A made-up plan with a tall flowchart placed where it cannot fit in what is
+// left of the page (see "Diagrams and page breaks" below).
+const tallDiagram = path.join(__dirname, 'fixtures', 'tall-diagram.md');
 const sampleText = fs.readFileSync(sample, 'utf8');
 // Annotation fixtures: a saved set of notes on the sample plan, the same plan
 // after an edit, and the Markdown export those notes should produce.
@@ -31,6 +36,15 @@ const sampleEdited = path.join(__dirname, 'fixtures', 'sample-edited.md');
 const sampleAnnotatedMd = path.join(__dirname, 'fixtures', 'sample.annotated.md');
 const margin = { layout: 'margin', paper: 'letter', notes: 'medium', pattern: 'dots', breakH2: false };
 const noteCount = fs.existsSync(sampleNotes) ? JSON.parse(fs.readFileSync(sampleNotes, 'utf8')).annotations.length : 0;
+// The tall-diagram plan in each of the three layouts, on both papers, with
+// and without a new page at each H2.
+const tall = { mdFile: tallDiagram, minPages: 4, expectDiagrams: { rendered: 2, failed: 0 } };
+// "Prints exactly like that other scenario": as many pages (samePagesAs), and
+// on them the same words and the same picture (samePdfAs).
+const printsLike = (name) => ({ samePagesAs: name, samePdfAs: name });
+const tallMargin = { ...margin, breakH2: true };
+const tallReview = { layout: 'review', paper: 'letter', notes: 'medium', pattern: 'dots', breakH2: false };
+const tallDense = { layout: 'dense', paper: 'a4', notes: 'small', pattern: 'lines', breakH2: true };
 
 const scenarios = [
   { name: 'review-letter-medium-dots', settings: { layout: 'review', paper: 'letter', notes: 'medium', pattern: 'dots', breakH2: false }, minPages: 2 },
@@ -44,6 +58,32 @@ const scenarios = [
   { name: 'empty-review-letter', settings: { layout: 'review', paper: 'letter', notes: 'medium', pattern: 'dots', breakH2: false }, md: '', minPages: 1, maxPages: 1 },
   { name: 'mermaid-review-letter', settings: { layout: 'review', paper: 'letter', notes: 'medium', pattern: 'dots', breakH2: false }, mdFile: mermaidDoc, minPages: 2, expectDiagrams: { rendered: 5, failed: 1 } },
   { name: 'mermaid-margin-letter', settings: { layout: 'margin', paper: 'letter', notes: 'none', pattern: 'dots', breakH2: false }, mdFile: mermaidDoc, minPages: 2, expectDiagrams: { rendered: 5, failed: 1 } },
+
+  // ---- Diagrams and page breaks ----
+  // A tall flowchart that cannot fit under the text above it must move to the
+  // next page in one piece and keep its colours (checked for every scenario,
+  // see diagramProblems below). The zoom must not matter: it only scales the
+  // finished pages, but it is still on them while the next render is laid
+  // out, and that used to make Paged.js mis-measure. So each layout is
+  // rendered with the preview at 100% (zoom: '1') and then again with it
+  // zoomed in or out; the two must print exactly alike (printsLike).
+  // 0.5, 0.75 and 1.25 are on the Zoom menu; 0.8 is what "Fit width" gives in
+  // a narrow window, and is the zoom that tore the diagram in two.
+  { name: 'tall-diagram-margin-letter', settings: { ...tallMargin, zoom: '1' }, ...tall },
+  { name: 'tall-diagram-margin-letter-zoom80', settings: { ...tallMargin, zoom: '0.8' }, ...tall, ...printsLike('tall-diagram-margin-letter') },
+  { name: 'tall-diagram-margin-letter-zoom50', settings: { ...tallMargin, zoom: '0.5' }, ...tall, ...printsLike('tall-diagram-margin-letter') },
+  { name: 'tall-diagram-margin-letter-zoom125', settings: { ...tallMargin, zoom: '1.25' }, ...tall, ...printsLike('tall-diagram-margin-letter') },
+  { name: 'tall-diagram-review-letter', settings: { ...tallReview, zoom: '1' }, ...tall },
+  { name: 'tall-diagram-review-letter-zoom75', settings: { ...tallReview, zoom: '0.75' }, ...tall, ...printsLike('tall-diagram-review-letter') },
+  { name: 'tall-diagram-dense-a4', settings: { ...tallDense, zoom: '1' }, ...tall },
+  { name: 'tall-diagram-dense-a4-zoom75', settings: { ...tallDense, zoom: '0.75' }, ...tall, ...printsLike('tall-diagram-dense-a4') },
+  // Belt and braces. With the zoom deliberately left on while the pages are
+  // laid out (layoutUnderZoom, the old behaviour), Paged.js again chooses a
+  // page break in the middle of the flowchart. The diagram must still reach
+  // the next page in one piece, with its colours. Pages and text are not
+  // compared here: the old behaviour loses text, which is the reason the
+  // zoom is paused in the first place.
+  { name: 'tall-diagram-kept-whole', settings: { ...tallMargin, zoom: '0.8', layoutUnderZoom: true }, ...tall },
 
   // ---- Annotations ----
   // A saved set of notes loads, every note attaches, nothing on the page moves,
@@ -148,6 +188,42 @@ function pdfText(file, marginOnly = false) {
 }
 // Notes wrap in the narrow column, so compare with all whitespace removed.
 const squeeze = (t) => String(t).replace(/\s+/g, '');
+// A PDF as a picture: every page drawn small and grey, one after the other.
+// Two PDFs that print alike give exactly the same bytes.
+function pdfPixels(file) {
+  return execFileSync('pdftoppm', ['-gray', '-r', '40', file], { maxBuffer: 256 * 1024 * 1024 });
+}
+
+// What is wrong with the Mermaid diagrams on the pages of one scenario (an
+// empty list when all is well). `rendered` is how many diagrams the document
+// has; `figures` describes each one found on the pages (the diagramsOnPages
+// test hook in renderer/src/app.js).
+// Mermaid colours a diagram with CSS that only matches the <svg>'s own id.
+// If a page break lands inside a diagram, Paged.js continues it on the next
+// page under a copy of the <svg> without that id, and every shape there
+// falls back to the SVG default: solid black.
+function diagramProblems({ rendered, figures }) {
+  const found = [];
+  const BLACK = 'rgb(0, 0, 0)';
+  if (figures.length !== rendered) found.push(`${rendered} diagram(s) rendered but ${figures.length} found on the pages`);
+  const refs = new Set();
+  for (const f of figures) {
+    const where = `the diagram on page ${f.page}`;
+    if (f.piece || refs.has(f.ref)) found.push(`${where} is one piece of a diagram that was split across pages`);
+    refs.add(f.ref);
+    if (f.svgs !== 1) {
+      found.push(`${where} holds ${f.svgs} <svg> elements, expected exactly 1`);
+    } else {
+      if (!f.id) found.push(`${where} lost its id, so its styles no longer apply`);
+      if (f.styles !== 1) found.push(`${where} has ${f.styles} <style> elements, expected exactly 1`);
+      else if (f.id && !f.cssMatchesId) found.push(`${where} has styles written for a different id than its own`);
+      if (!f.shapes) found.push(`${where} is empty (no shapes or text inside)`);
+      if (f.nodeFill === BLACK) found.push(`${where} is drawn without its styles (its boxes are solid black)`);
+    }
+    if (!f.onPage) found.push(`${where} is not inside the page's text area (cut off or out of sight)`);
+  }
+  return found;
+}
 
 const EXPECTED_SIZE = { letter: [612, 792], a4: [595.28, 841.89] };
 const byName = {};
@@ -181,6 +257,13 @@ for (const scenario of scenarios) {
       if (d.rendered !== scenario.expectDiagrams.rendered || d.failed !== scenario.expectDiagrams.failed) {
         problems.push(`diagrams rendered/failed = ${d.rendered}/${d.failed}, expected ${scenario.expectDiagrams.rendered}/${scenario.expectDiagrams.failed}`);
       }
+    }
+    // Every scenario: each diagram is on its page, whole and styled.
+    if (r.diagramsOnPages) problems.push(...diagramProblems(r.diagramsOnPages));
+    else problems.push('no diagram results in the report');
+    // A scenario that sets a zoom really had it on the pages during layout.
+    if (scenario.settings.zoom && r.zoomDuringLayout !== `scale(${Number(scenario.settings.zoom)})`) {
+      problems.push(`zoom during layout was ${r.zoomDuringLayout}, expected scale(${Number(scenario.settings.zoom)})`);
     }
     // ---- Annotation expectations ----
     const a = r.annotations;
@@ -237,6 +320,15 @@ for (const scenario of scenarios) {
     if (scenario.samePagesAs) {
       const other = byName[scenario.samePagesAs];
       if (other && info.pages !== other.pdfPages) problems.push(`${info.pages} pages, expected the same as ${scenario.samePagesAs} (${other.pdfPages})`);
+    }
+    // Prints exactly like another scenario's PDF: the same words on every page
+    // and the same picture.
+    if (scenario.samePdfAs) {
+      try {
+        const other = path.join(out, `${scenario.samePdfAs}.pdf`);
+        if (pdfText(pdfPath) !== pdfText(other)) problems.push(`PDF text differs from ${scenario.samePdfAs}`);
+        if (!pdfPixels(pdfPath).equals(pdfPixels(other))) problems.push(`PDF pages look different from ${scenario.samePdfAs}`);
+      } catch (e) { problems.push(`comparing with ${scenario.samePdfAs}.pdf failed: ${e.message}`); }
     }
     // First PDF page as PNG for visual review.
     try {

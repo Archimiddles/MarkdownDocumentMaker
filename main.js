@@ -445,6 +445,12 @@ async function runTestMode(win) {
       // Run one method of the renderer's test hook and wait for its answer.
       const hook = (method, ...args) => win.webContents.executeJavaScript(
         `window.__planPrinterTest.${method}(${args.map((a) => JSON.stringify(a)).join(', ')})`, true);
+      // The preview zoom is only a scale on the finished pages, and whatever
+      // the last render left there is still in place while the next one is
+      // laid out. So every scenario starts from a known zoom, picked the way
+      // the Zoom menu does: its own "zoom" setting if it has one, otherwise
+      // "Fit width".
+      const zoomDuringLayout = await hook('setZoom', (s.settings || {}).zoom || 'fit');
       const r = await hook('apply', s.settings || {}, md);
 
       // A scenario with docFile behaves like a document opened from disk, so
@@ -532,6 +538,10 @@ async function runTestMode(win) {
         fs.writeFileSync(path.join(out, annotations.sidecarFile), JSON.stringify(await hook('sidecar'), null, 2));
       }
 
+      // Every Mermaid diagram as it ended up on the pages: in one piece, with
+      // its styles, inside its page? test/run.js judges the answers.
+      const diagramsOnPages = await hook('diagramsOnPages');
+
       const pdf = await win.webContents.printToPDF(pdfOptions(paper));
       const pdfName = `${s.name}.pdf`;
       fs.writeFileSync(path.join(out, pdfName), pdf);
@@ -545,6 +555,8 @@ async function runTestMode(win) {
         title: r && r.title,
         renderMs: r && r.renderMs,
         diagrams: r && r.diagrams,
+        diagramsOnPages,
+        zoomDuringLayout,
         totalMs: Date.now() - t0,
         error: (r && r.error) || null,
         pdf: pdfName,
