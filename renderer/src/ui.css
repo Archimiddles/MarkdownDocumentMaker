@@ -162,6 +162,10 @@ button[hidden] { display: none; }
   html, body { height: auto !important; overflow: visible !important; background: #fff !important; }
   .app { display: block !important; height: auto !important; }
   .toolbar, .statusbar, .editor-pane { display: none !important; }
+  /* On-screen helpers never print. Marks and cards do. */
+  .anno-pane, .anno-toc, .anno-popover, .anno-add, .anno-card-tools {
+    display: none !important;
+  }
   .main { display: block !important; }
   .preview-scroll { overflow: visible !important; padding: 0 !important; height: auto !important; }
   .preview-inner { width: auto !important; height: auto !important; margin: 0 !important; }

@@ -37,6 +37,65 @@ sent to any service, and the test suite fails if the app makes a single network 
 
 ![A page with a code block and the notes box](docs/layout-review-code.png)
 
+## Annotate on screen
+
+Press **Annotate** (`Ctrl+Shift+A`) to mark a plan up without printing it. The Markdown
+is locked while you annotate, the layout switches to Margin notes, and the editor makes
+way for a list of your notes.
+
+![Annotate mode: tool bar, one section open in the notes list with its section note, the contents column, highlights and margin notes](docs/annotate.png)
+
+- **Highlight** in five colours, each with a meaning: Note, Question, Change, Keep,
+  Important. Select some words and click a colour (or press `1` to `5`).
+- **Underline** (`U`) and **strikethrough** (`S`). Strikethrough means "remove this".
+- **Margin notes** (`N`): type a note about the selected words. It sits in the right-hand
+  column, level with its text, and shares a small number with it.
+- **Notes on a whole block**: the **+** beside a paragraph, table, code block or diagram.
+- Click any mark to change its colour, add a note or delete it. `Ctrl+Z` undoes.
+- **Contents**: a column between the notes and the page that lists the headings like the
+  contents page of a book. Every `#`, `##` and `###` heading is there with its page number
+  and the number of notes under it (a section's count includes its subsections). Click a
+  row to jump to that heading; the section you are reading stays lit as you scroll. The
+  **Contents** button in the tool bar hides the column and brings it back.
+- **Section notes**: clicking a heading in Contents also opens that section in the notes
+  list: a **Section note** box for your own final note on the section, with every note
+  you made inside it (subsections included) listed underneath. What you type is saved when
+  you click away. A tick in Contents shows which sections you have summed up, each section
+  note is an entry in the full list (**All notes** brings that back; the **Section** chip
+  shows only them), and the Markdown export writes it under its heading. Section notes are
+  for you and the export: they are not printed on the page.
+
+Notes are saved as you go in a sidecar file beside the document
+(`plan.md` → `plan.md.annotations.json`); the Markdown itself is never changed. Text you
+pasted has no file yet, so its notes are kept inside the app until you use
+**Save Markdown As…**. If the Markdown changes later, each note finds its words again;
+a note whose words are gone is kept and listed as *Unplaced* rather than dropped. A note
+is never moved on a guess: when the same words appear several times and nothing tells the
+copies apart, it becomes *Unplaced* instead of landing on the wrong one.
+
+Two ways to take your notes with you:
+
+- **Export PDF…** and **Print…** include the highlights and margin notes. **Hide** gives
+  a clean printout without deleting anything.
+- **Export Markdown…** (`Ctrl+Shift+E`) writes a copy of the plan with every note inline
+  in [CriticMarkup](https://github.com/CriticMarkup/CriticMarkup-toolkit), ready to hand
+  back to an LLM. **Copy for LLM** puts the same text on the clipboard.
+
+```markdown
+Buckets are {==refilled lazily on read==}{>>[question] Why lazily? What happens
+under burst load?<<} so there is no background job to operate.
+
+## Risks
+
+{>>[section note] Understated: clock skew needs an owner before this ships.<<}
+```
+
+A short legend at the top of the export explains the notation and the labels. Notes are
+never written inside code blocks or diagrams (that would change them): those get a
+comment on the line below instead, quoting the words. Every inline insertion is checked
+by rendering the paragraph again; if the result differs in any way beyond the note
+itself, the note goes below the block too.
+
 ## Install and run
 
 Requires [Node.js](https://nodejs.org/) 18 or newer.
@@ -86,6 +145,8 @@ The last text and settings are remembered between launches.
 | `Ctrl+E` | Export PDF |
 | `Ctrl+P` | Print |
 | `Ctrl+\` | Hide or show the editor |
+| `Ctrl+Shift+A` | Annotate mode on or off |
+| `Ctrl+Shift+E` | Export annotated Markdown |
 
 ## How it works
 
@@ -95,11 +156,26 @@ The last text and settings are remembered between launches.
 - `renderer/src/app.js`: Markdown → HTML with [marked](https://marked.js.org/) and
   [highlight.js](https://highlightjs.org/), sanitised with DOMPurify, Mermaid fences
   rendered to inline SVG, then paginated by Paged.js. The header strip, notes box and margin column are injected into each page
-  *after* layout, so they never push content around.
+  *after* layout, so they never push content around. The preview zoom is a CSS scale on
+  the finished pages; it is set to 100% for the instant Paged.js measures each page,
+  because Paged.js mis-measures a scaled page (zoomed out, it lost text off the bottom of
+  pages and could cut a diagram in two, which printed as solid black shapes). A page
+  break is also never allowed to land inside a diagram.
 - `renderer/src/page.css`: everything about the printed page. Handed to Paged.js as text
   because it has to parse the `@page` rules itself. The `@page` size and margins are
   generated from the chosen layout in `app.js`.
 - `renderer/src/ui.css`: the application chrome, plus the print rules that hide it.
+- `renderer/src/annotations/`: highlights, mark-up and margin notes. Marks are added to
+  the finished pages *after* Paged.js has laid them out and change only colour and
+  decoration, so annotating can never move a page break. Each note remembers the words
+  it is about plus a little context and looks them up again after every re-render
+  (`match.js`); `export-md.js` writes them back into the Markdown source. The contents
+  column is `outline.js` (which headings, how many notes under each) and `contents.js`
+  (the list on screen, jumping to a heading, lighting the section being read). A section
+  note is one more kind of note, attached to its section's heading; a notes file that
+  holds one is marked version 2 so an older copy of the app leaves it alone.
+- `annotations-store.js`: reads and writes the sidecar file in the main process. The
+  sandboxed page never names a path; it can only ask for "the notes of the open document".
 - `scripts/build.js`: a small esbuild script that bundles the renderer and the
   self-hosted fonts (Inter, Source Serif 4, JetBrains Mono via Fontsource).
 - `scripts/start.js`: launches Electron and retries without the Chromium sandbox if
@@ -116,12 +192,30 @@ otherwise. Paged.js does not repeat a table's header row on continuation pages.
 npm test
 ```
 
-Launches the real app in a headless test mode, renders eleven layout/paper/content
+First runs the unit tests (`npm run test:unit`): the text matching, the Markdown export,
+the contents outline and the sidecar storage, with no app window.
+
+Then launches the real app in a headless test mode, renders eleven layout/paper/content
 combinations (including a code block longer than a page, a wide table, nested task lists,
 six Mermaid diagrams of which one is deliberately broken, and an empty document), exports each through `printToPDF`, and checks with `pdfinfo`
 that every PDF has the paper size you asked for and exactly as many pages as the preview
-showed. Screenshots and first-page renders land in `test/output/` for eyeballing.
-Needs `poppler-utils` (`pdfinfo`, `pdftoppm`) on the PATH.
+showed. Nine scenarios render a plan with a tall flowchart in all three layouts with the
+preview zoomed in and out: the diagram must reach the next page whole and in colour, and
+every zoom must print exactly what 100% prints. Nine more scenarios cover annotations: saved notes re-attach, including after
+the layout or the text changes; painting them moves no line of text; a highlight across a
+page break appears on both pages; margin notes are real text in the PDF; notes are written
+to a sidecar beside a real file and come back from it after a restart, while a file that
+was never annotated gets no sidecar; and the Markdown export matches
+`test/fixtures/sample.annotated.md` (after an intended change to the export, refresh it
+with `UPDATE_FIXTURES=1 node test/run.js`). Two more cover the contents column: it lists
+the right headings, pages and note counts, and a click on a row brings that heading to the
+top of the view, including the last heading of a document, which cannot scroll that far.
+One covers section notes: typed in the notes list, ticked in the contents, written under
+their heading in the export, kept after a re-layout, and never printed.
+The test window ignores the mouse and does not take the keyboard, so you can keep working
+while the suite runs.
+Screenshots and first-page renders land in `test/output/` for eyeballing.
+Needs `poppler-utils` (`pdfinfo`, `pdftoppm`, `pdftotext`) on the PATH.
 
 ## Packaging (optional)
 

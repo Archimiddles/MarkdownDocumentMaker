@@ -7,4 +7,5 @@ out/
 *.log
 .DS_Store
 test/output/
+test/.unit-build/
 release/

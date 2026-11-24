@@ -38,15 +38,23 @@
       </div>
       <div class="group right">
         <label>Zoom <select id="zoom"></select></label>
+        <button id="btn-annotate" aria-pressed="false" title="Annotate mode (Ctrl+Shift+A)">Annotate</button>
         <button id="btn-toggle-editor" title="Show or hide the editor (Ctrl+\)">Hide editor</button>
       </div>
     </div>
+    <!-- Filled in by annotations/ui.js. Shown in Annotate mode. -->
+    <div class="tb-row anno-bar" id="anno-bar" hidden></div>
   </header>
 
   <main class="main">
     <section class="editor-pane">
       <textarea id="editor" spellcheck="false" placeholder="Paste a Claude Code plan (Markdown) here, or drop a .md file onto this box."></textarea>
     </section>
+    <!-- The notes list. Filled in by annotations/ui.js; takes the editor's place in Annotate mode. -->
+    <aside class="anno-pane" id="anno-pane" hidden></aside>
+    <!-- The contents list (headings, page numbers, note counts). Filled in by
+         annotations/contents.js; shown in Annotate mode, between the notes and the pages. -->
+    <nav class="anno-toc" id="anno-toc" aria-label="Contents" hidden></nav>
     <section class="preview-scroll" id="preview-scroll">
       <div class="preview-inner" id="preview-inner">
         <div id="pages"></div>

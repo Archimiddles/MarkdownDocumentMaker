@@ -1,0 +1,222 @@
+{
+  "format": "plan-printer-annotations",
+  "version": 1,
+  "document": {
+    "name": "sample-plan.md",
+    "hash": "557d0eab",
+    "chars": 5779
+  },
+  "labels": [
+    {
+      "id": "note",
+      "name": "Note",
+      "color": "#fff1a8",
+      "ink": "#8a6d00",
+      "meaning": "general remark"
+    },
+    {
+      "id": "question",
+      "name": "Question",
+      "color": "#cfe4ff",
+      "ink": "#1a56b0",
+      "meaning": "needs an answer"
+    },
+    {
+      "id": "change",
+      "name": "Change",
+      "color": "#ffd3cf",
+      "ink": "#b3261e",
+      "meaning": "please change this"
+    },
+    {
+      "id": "keep",
+      "name": "Keep",
+      "color": "#d3f2d0",
+      "ink": "#1e7a34",
+      "meaning": "good, keep as is"
+    },
+    {
+      "id": "important",
+      "name": "Important",
+      "color": "#ffe0b3",
+      "ink": "#b35a00",
+      "meaning": "do not miss this"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "sample01",
+      "kind": "highlight",
+      "label": "important",
+      "note": "Add the source for this figure.",
+      "target": {
+        "block": 2,
+        "start": 97,
+        "end": 127,
+        "exact": "roughly 40k requests in ten minutes",
+        "prefix": "k a single integration partner issued ",
+        "suffix": " and pushed p95 latency past the 2 s SLO f"
+      },
+      "created": "2026-11-16T12:00:00.000Z",
+      "modified": "2026-11-16T12:00:00.000Z"
+    },
+    {
+      "id": "sample02",
+      "kind": "highlight",
+      "label": "question",
+      "note": "Why lazily? What happens under burst load?",
+      "target": {
+        "block": 5,
+        "start": 96,
+        "end": 116,
+        "exact": "refilled lazily on read",
+        "prefix": "ddleware before routing. Buckets are ",
+        "suffix": " so there is no background job to operat"
+      },
+      "created": "2026-11-16T12:00:00.000Z",
+      "modified": "2026-11-16T12:00:00.000Z"
+    },
+    {
+      "id": "sample03",
+      "kind": "underline",
+      "label": "keep",
+      "note": "Good default.",
+      "target": {
+        "block": 6,
+        "start": 30,
+        "end": 48,
+        "exact": "Maximum burst per key",
+        "prefix": "Setting Default Notes capacity 600 ",
+        "suffix": " refill_per_sec 10 Sustained rate fai"
+      },
+      "created": "2026-11-16T12:00:00.000Z",
+      "modified": "2026-11-16T12:00:00.000Z"
+    },
+    {
+      "id": "sample04",
+      "kind": "highlight",
+      "label": "keep",
+      "note": "",
+      "target": {
+        "block": 7,
+        "start": 9,
+        "end": 37,
+        "exact": "fail open rather than fail closed",
+        "prefix": "Decision: ",
+        "suffix": ". A limiter outage should not become an"
+      },
+      "created": "2026-11-16T12:00:00.000Z",
+      "modified": "2026-11-16T12:00:00.000Z"
+    },
+    {
+      "id": "sample05",
+      "kind": "highlight",
+      "label": "note",
+      "note": "Also test the Lua path.",
+      "target": {
+        "block": 10,
+        "start": 279,
+        "end": 314,
+        "exact": "unit tests with a fake clock and fake Redis",
+        "prefix": "s/middleware/test_rate_limit.py — ",
+        "suffix": ". docs/api/limits.md — document the h"
+      },
+      "created": "2026-11-16T12:00:00.000Z",
+      "modified": "2026-11-16T12:00:00.000Z"
+    },
+    {
+      "id": "sample06",
+      "kind": "highlight",
+      "label": "change",
+      "note": "Return a named tuple instead.",
+      "target": {
+        "block": 13,
+        "start": 125,
+        "end": 167,
+        "exact": "Returns (allowed, seconds_until_next_token).",
+        "prefix": "ow: float) -> tuple[bool, float]: \"\"\"",
+        "suffix": "\"\"\" tokens, updated = redis.hmget(ke"
+      },
+      "created": "2026-11-16T12:00:00.000Z",
+      "modified": "2026-11-16T12:00:00.000Z"
+    },
+    {
+      "id": "sample07",
+      "kind": "strike",
+      "label": "change",
+      "note": "Say this before the code, not after.",
+      "target": {
+        "block": 14,
+        "start": 0,
+        "end": 48,
+        "exact": "The read-modify-write above is racy under concurrency.",
+        "prefix": "",
+        "suffix": " Wrap it in a small Lua script in step 3 so"
+      },
+      "created": "2026-11-16T12:00:00.000Z",
+      "modified": "2026-11-16T12:00:00.000Z"
+    },
+    {
+      "id": "sample08",
+      "kind": "highlight",
+      "label": "important",
+      "note": "",
+      "target": {
+        "block": 17,
+        "start": 2,
+        "end": 21,
+        "exact": "Atomic update with Lua",
+        "prefix": "3. ",
+        "suffix": ""
+      },
+      "created": "2026-11-16T12:00:00.000Z",
+      "modified": "2026-11-16T12:00:00.000Z"
+    },
+    {
+      "id": "sample09",
+      "kind": "highlight",
+      "label": "question",
+      "note": "Why 601 and not 600?",
+      "target": {
+        "block": 23,
+        "start": 105,
+        "end": 153,
+        "exact": "Integration: 601 requests in a burst produce exactly one",
+        "prefix": "en=false surfaces RedisError as a 503 ",
+        "suffix": " 429 Confirm the Redis cluster has EVAL"
+      },
+      "created": "2026-11-16T12:00:00.000Z",
+      "modified": "2026-11-16T12:00:00.000Z"
+    },
+    {
+      "id": "sample10",
+      "kind": "highlight",
+      "label": "important",
+      "note": "",
+      "target": {
+        "block": 26,
+        "start": 0,
+        "end": 25,
+        "exact": "Clock skew between app nodes.",
+        "prefix": "",
+        "suffix": " Buckets use the app server clock; a nod"
+      },
+      "created": "2026-11-16T12:00:00.000Z",
+      "modified": "2026-11-16T12:00:00.000Z"
+    },
+    {
+      "id": "sample11",
+      "kind": "block",
+      "label": "question",
+      "note": "Show the fail-closed path in the diagram too.",
+      "target": {
+        "block": 8,
+        "exact": "```mermaid flowchart LR A[Request] --> B{Exempt key?} B -- yes --> H[Handler] B "
+      },
+      "created": "2026-11-16T12:00:00.000Z",
+      "modified": "2026-11-16T12:00:00.000Z"
+    }
+  ],
+  "drawings": [],
+  "savedAt": "2026-11-16T12:00:00.000Z"
+}

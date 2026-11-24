@@ -1,0 +1,29 @@
+/* Screen-only behaviour of margin note cards. How a card LOOKS (and prints)
+   is in page.css; this file only covers what you can do to one on screen. */
+
+/* The delete button exists only while annotating. */
+.anno-card .anno-card-tools { display: none; }
+
+@media screen {
+  .app.annotating .anno-card { cursor: text; }
+  .app.annotating .anno-card .anno-card-tools { display: inline; opacity: 0.55; }
+  .app.annotating .anno-card .anno-card-tools:hover { opacity: 1; }
+  /* An empty card that is waiting for its first words. */
+  .anno-card.editing .anno-text:empty::before { content: 'Type a note…'; color: #9a9aa0; }
+}
+
+@media screen {
+  /* Dragging a selection out of the text and over the margin must not sweep
+     up the notes there. A card that is being typed into is the exception. */
+  .app.annotating #pages .margin-notes { user-select: none; }
+  .app.annotating #pages .anno-card.editing .anno-text { user-select: text; }
+  /* A drag that starts on a link should select its words, not drag the link.
+     Chromium refuses to start a selection on a link unless the link is both
+     undraggable and explicitly selectable. */
+  .app.annotating #pages a { -webkit-user-drag: none; user-select: text; }
+  /* ...and a link that was merely dragged across should not keep a focus ring. */
+  .app.annotating #pages a:focus { outline: none; }
+  /* A card being typed into is never taller than its column (it scrolls
+     instead) and sits above its neighbours, so its last line is always in view. */
+  .anno-card.editing { max-height: 100%; overflow-y: auto; z-index: 3; }
+}

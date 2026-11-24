@@ -1,0 +1,424 @@
+/* Annotate mode: the on-screen controls built by annotations/ui.js (the bar,
+   the pop-up, the notes list and the "+" button). What marks and margin cards
+   look like on the printed page lives in page.css.
+
+   Every rule here starts from one of our own containers (.anno-bar,
+   .anno-pane, .anno-popover, .anno-add) so that nothing leaks onto the pages.
+   The exceptions are the short sections marked "on the pages" below.
+
+   A label's colours reach these rules as --sw (fill) and --sw-ink (darker
+   ink), set on each swatch and dot by ui.js. */
+
+:root {
+  --anno-on-bg: #e6ecfb; /* pale tint of --accent: "this one is switched on" */
+  --anno-danger: #b3261e;
+}
+
+/* The hidden attribute loses to any rule that sets `display` (.tb-row does),
+   so say it again for everything of ours that is shown and hidden. */
+.anno-bar[hidden],
+.anno-pane[hidden],
+.anno-popover[hidden],
+.anno-add[hidden],
+.anno-pane [hidden] {
+  display: none !important;
+}
+
+/* ---- Layout: the notes list takes the editor's place ----------------------- */
+
+.app.annotating .editor-pane { display: none; }
+
+/* Three columns: notes list | contents | pages. The second selector outranks
+   ".app.editor-hidden .main" in ui.css, which would otherwise leave a single
+   column when the editor was hidden first. */
+.app.annotating .main,
+.app.annotating.editor-hidden .main {
+  grid-template-columns: minmax(230px, 22%) minmax(230px, 18%) minmax(0, 1fr);
+}
+/* The contents column can be switched off (the Contents button in the bar);
+   app.js then adds .toc-off and the pages get its room back. */
+.app.annotating.toc-off .main,
+.app.annotating.toc-off.editor-hidden .main {
+  grid-template-columns: minmax(230px, 22%) minmax(0, 1fr);
+}
+
+/* The Annotate button looks pressed while the mode is on. */
+#btn-annotate[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+#btn-annotate[aria-pressed="true"]:hover { background: var(--accent-hover); }
+
+/* ---- Swatches and dots (bar, pop-up, notes list) ---------------------------- */
+
+:is(.anno-bar, .anno-popover) button.anno-swatch {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  border-radius: 50%;
+  background: var(--sw, #fff1a8);
+}
+/* The app's own button:hover would turn a swatch grey. */
+:is(.anno-bar, .anno-popover) button.anno-swatch:hover,
+:is(.anno-bar, .anno-popover) button.anno-swatch:active {
+  background: var(--sw, #fff1a8);
+  border-color: var(--sw-ink, #55555c);
+}
+/* The ring on the current label, in that label's ink colour. */
+:is(.anno-bar, .anno-popover) button.anno-swatch[aria-pressed="true"] {
+  outline: 2px solid var(--sw-ink, #55555c);
+  outline-offset: 2px;
+}
+
+:is(.anno-pane, .anno-popover) .anno-dot {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border: 1px solid var(--sw-ink, #77777f);
+  border-radius: 50%;
+  background: var(--sw, #e2e2e6);
+}
+
+/* ---- The annotate bar -------------------------------------------------------- */
+
+.anno-bar { user-select: none; }
+
+/* A thin rule between groups, as in the plan's sketch. */
+.anno-bar .group + .group:not(.right) {
+  padding-left: 14px;
+  border-left: 1px solid var(--border);
+}
+
+.anno-bar .anno-swatches { gap: 9px; padding-right: 3px; } /* room for the ring */
+
+/* The tool, kind or toggle that is switched on. */
+:is(.anno-bar, .anno-popover) button[aria-pressed="true"]:not(.anno-swatch),
+:is(.anno-bar, .anno-popover) button[aria-pressed="true"]:not(.anno-swatch):hover {
+  background: var(--anno-on-bg);
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+
+/* "U" and "S" are drawn the way they mark the text. */
+:is(.anno-bar, .anno-popover) button.anno-tool-underline,
+:is(.anno-bar, .anno-popover) button.anno-tool-strike {
+  min-width: 28px;
+  padding: 3px 0;
+  font-weight: 600;
+}
+:is(.anno-bar, .anno-popover) button.anno-tool-underline {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+:is(.anno-bar, .anno-popover) button.anno-tool-strike { text-decoration: line-through; }
+
+/* pointer-events: none lets a press on a greyed-out button fall through to
+   the bar, whose mousedown handler keeps the text selection alive. */
+.anno-bar button:disabled {
+  opacity: 0.45;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* ---- The notes list ------------------------------------------------------------ */
+
+.anno-pane {
+  min-height: 0;
+  overflow: auto;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  user-select: none;
+}
+
+/* The title and the filter chips stay put while the list scrolls. */
+.anno-pane .anno-pane-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 10px 12px 9px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+.anno-pane .anno-pane-title { font-weight: 700; }
+/* "Notes (7)" on the left, the "All notes" button (section view only) on the right. */
+.anno-pane .anno-pane-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 22px;
+  margin-bottom: 7px;
+}
+.anno-pane button.anno-all {
+  margin-left: auto;
+  height: 22px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+/* The heading of the section that is open. */
+.anno-pane .anno-pane-section {
+  margin: -2px 0 8px;
+  font-weight: 600;
+  color: var(--accent-hover);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ---- The section note box (section view) -------------------------------------- */
+
+.anno-pane .anno-section-box {
+  padding: 10px 12px 9px;
+  border-bottom: 1px solid var(--border);
+  background: #fff;
+}
+.anno-pane .anno-section-label {
+  display: block; /* the app's own label rule lays labels out in a row */
+  margin-bottom: 5px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.anno-pane .anno-section-text {
+  display: block;
+  width: 100%;
+  min-height: 84px;
+  max-height: 45vh; /* a very long note scrolls inside the box */
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+  line-height: 1.45;
+  resize: none; /* it grows with its text instead (ui.js) */
+  user-select: text; /* the pane around it switches selecting off */
+}
+.anno-pane .anno-section-text:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+  border-color: var(--accent);
+}
+.anno-pane .anno-section-meta {
+  margin-top: 7px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* A section note in the list: a dark square instead of a label's coloured dot. */
+:is(.anno-pane, .anno-popover) .anno-dot.anno-dot-section {
+  border-radius: 2px;
+  border-color: var(--text);
+  background: var(--text);
+}
+.anno-pane .anno-item-section .anno-item-quote { font-weight: 600; color: var(--text); }
+
+.anno-pane .anno-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.anno-pane button.anno-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 11px;
+  font-size: 12px;
+}
+.anno-pane button.anno-chip[aria-pressed="true"],
+.anno-pane button.anno-chip[aria-pressed="true"]:hover {
+  background: var(--anno-on-bg);
+  border-color: var(--accent);
+}
+.anno-pane .anno-chip-count { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+.anno-pane .anno-warn,
+.anno-pane .anno-hint,
+.anno-pane .anno-explain {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.anno-pane .anno-warn {
+  color: #6b5200;
+  background: #fff6da;
+  border-bottom: 1px solid #ecdba6;
+}
+.anno-pane .anno-hint { padding-top: 12px; }
+
+.anno-pane .anno-sub { padding: 12px 12px 0; font-weight: 700; }
+.anno-pane .anno-explain { padding-top: 4px; border-bottom: 1px solid var(--border); }
+
+.anno-pane .anno-item {
+  padding: 7px 8px 8px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.anno-pane .anno-item:hover { background: #ebebef; }
+.anno-pane .anno-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* An unplaced note has nowhere to jump to, so it does not look clickable. */
+.anno-pane .anno-item-unplaced { cursor: default; }
+.anno-pane .anno-item-unplaced:hover { background: transparent; }
+
+.anno-pane .anno-item-head { display: flex; align-items: center; gap: 6px; min-height: 20px; }
+/* The same number as on the margin card and beside the marked words. */
+.anno-pane .anno-item-num {
+  flex: none;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--text);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+.anno-pane .anno-item-label {
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.anno-pane .anno-item-kind,
+.anno-pane .anno-item-page {
+  flex: none;
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.anno-pane .anno-item-end {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto; /* pushes the page number and the delete button to the right */
+  flex: none;
+}
+.anno-pane button.anno-item-del {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+}
+.anno-pane button.anno-item-del:hover {
+  background: #f8e1df;
+  border-color: #e6b3ae;
+  color: var(--anno-danger);
+}
+
+.anno-pane .anno-item-quote,
+.anno-pane .anno-item-note {
+  margin-top: 3px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  /* Show at most three lines, ending in "…" when there is more. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+.anno-pane .anno-item-quote { font-size: 12px; color: var(--muted); }
+
+/* ---- Helpers that exist on screen only ---------------------------------------- */
+
+@media screen {
+  /* The pop-up. It sits on <body>, above the pages and the toolbar. */
+  .anno-popover {
+    position: fixed;
+    left: 0;
+    top: 0;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    padding: 7px;
+    background: #fff;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16), 0 1px 3px rgba(0, 0, 0, 0.12);
+    color: var(--text);
+    white-space: nowrap;
+    user-select: none;
+  }
+  .anno-popover .anno-pop-row { display: flex; align-items: center; gap: 5px; }
+  .anno-popover button.anno-swatch { margin: 3px; } /* room for the ring */
+  .anno-popover .anno-pop-sep {
+    align-self: stretch;
+    width: 1px;
+    margin: 0 3px;
+    background: var(--border);
+  }
+  .anno-popover button.anno-danger:hover {
+    background: #f8e1df;
+    border-color: #e6b3ae;
+    color: var(--anno-danger);
+  }
+
+  /* The "+" beside a block. It lives in #preview-inner, which scrolls with
+     the pages but is not zoomed, so the button keeps its size at any zoom. */
+  button.anno-add {
+    position: absolute;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0 0 1px;
+    border-color: var(--accent);
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+    color: #fff;
+    font-size: 15px;
+    font-weight: 700;
+    line-height: 1;
+  }
+  button.anno-add:hover,
+  button.anno-add:active { background: var(--accent-hover); }
+
+  /* ---- On the pages, in Annotate mode only ---- */
+
+  /* A mark can be clicked to change or delete it (not while they are hidden). */
+  .app.annotating #pages:not(.anno-off) mark.anno { cursor: pointer; }
+
+  /* Dragging a selection across a page gap must not pick up page furniture. */
+  .app.annotating #pages .page-header,
+  .app.annotating #pages .notes-label { user-select: none; }
+
+  /* ---- On the pages: the flash when a note is picked in the list ---- */
+
+  /* The controller adds .anno-flash to the mark, block or card for a moment.
+     An outline takes no room, so no text moves. */
+  @keyframes anno-flash-ring {
+    0% { outline-color: transparent; }
+    15%, 55% { outline-color: var(--accent); }
+    100% { outline-color: transparent; }
+  }
+  .anno-flash {
+    outline: 3px solid transparent;
+    outline-offset: 2px;
+    animation: anno-flash-ring 1.2s ease-out 1;
+  }
+}
+
+/* ---- On the pages: the "Hide" toggle ------------------------------------------- */
+
+/* Not inside @media screen on purpose: hiding is for a clean printout, so it
+   has to hold on paper and in the PDF too. */
+#pages.anno-off mark.anno {
+  background: transparent !important;
+  text-decoration: none !important;
+}
+#pages.anno-off mark.anno::after { display: none !important; }
+#pages.anno-off .anno-card { display: none !important; }
+#pages.anno-off .anno-block { box-shadow: none !important; }
